@@ -1,0 +1,355 @@
+
+
+#define OS_CPU_ARM_CONTROL_FIQ_DIS       0x40                     //; Disable FIQ.
+#define OS_CPU_ARM_CONTROL_IRQ_DIS       0x80                     //; Disable IRQ.
+#define OS_CPU_ARM_CONTROL_THUMB         0x20                     //; Set THUMB mode.
+#define OS_CPU_ARM_CONTROL_ARM           0x00                     //; Set ARM mode.
+
+#define OS_CPU_ARM_MODE_MASK              0x1F
+#define OS_CPU_ARM_MODE_USR               0x10
+#define OS_CPU_ARM_MODE_FIQ               0x11
+#define OS_CPU_ARM_MODE_IRQ               0x12
+#define OS_CPU_ARM_MODE_SVC               0x13
+#define OS_CPU_ARM_MODE_ABT               0x17
+#define OS_CPU_ARM_MODE_UND               0x1B
+#define OS_CPU_ARM_MODE_SYS               0x1F
+
+#define OS_CPU_ARM_EXCEPT_RESET           0x00
+#define OS_CPU_ARM_EXCEPT_UNDEF_INSTR     0x01
+#define OS_CPU_ARM_EXCEPT_SWI             0x02
+#define OS_CPU_ARM_EXCEPT_PREFETCH_ABORT  0x03
+#define OS_CPU_ARM_EXCEPT_DATA_ABORT      0x04
+#define OS_CPU_ARM_EXCEPT_ADDR_ABORT      0x05
+#define OS_CPU_ARM_EXCEPT_IRQ             0x06
+#define OS_CPU_ARM_EXCEPT_FIQ             0x07
+
+//.global OS_CPU_SR_Save
+//.align 0
+//OS_CPU_SR_Save:
+//    MRS     R0, CPSR
+    //ORR     R1, R0, #OS_CPU_ARM_CONTROL_INT_DIS                 // Set IRQ and FIQ bits in CPSR to disable all interrupts.
+//    MSR     CPSR_c, R1
+//    BX      LR                                                  // Disabled, return the original CPSR contents in R0.
+
+//.global OS_CPU_SR_Restore
+//.align 0
+//OS_CPU_SR_Restore:
+ //   MSR     CPSR_c, R0
+ //   BX      LR
+
+
+.global OSStartHighRdy
+.align 0
+OSStartHighRdy:
+
+                                                                // Change to SVC mode.
+    //;MSR     CPSR_c, #(OS_CPU_ARM_CONTROL_INT_DIS | OS_CPU_ARM_MODE_SVC)
+
+    //LDR     R0, OSTaskSwHook                                  // OSTaskSwHook();
+    //MOV     LR, PC
+//BX      R0
+
+    LDR     R0, .OS_Running                                     // OSRunning = TRUE;
+    MOV     R1, #1
+    STRB    R1, [R0]
+
+                                                                //; SWITCH TO HIGHEST PRIORITY TASK:
+    LDR     R0, .OSTCB_HighRdy                                  //;    Get highest priority task TCB address,
+    LDR     R0, [R0]                                            //;    Get stack pointer,
+
+    LDR     SP, [R0]                                            //;    Switch to the new stack,
+
+    LDR     R0, [SP], #4                                        //;    Pop new task's CPSR,
+    //;MSR     SPSR_cxsf, R0
+    //;mov     r0, sp
+    //;BL	    PrintTaskContext
+    LDMFD   SP!, {R0-R12, LR, pc}                              //;    Pop new task's context.
+
+.OS_Running:
+	.word OSRunning
+.OSTCB_HighRdy:
+	.word OSTCBHighRdy
+
+.global OSCtxSw
+.align 0
+OSCtxSw:
+                                                                //; SAVE CURRENT TASK'S CONTEXT:
+    STMFD   SP!, {LR}                                           //;     Push return address,
+    STMFD   SP!, {LR}
+    STMFD   SP!, {R0-R12}                                       //;     Push registers,
+    //;MRS     R0, CPSR                                            //;     Push current CPSR,
+    //;TST     LR, #1                                              //;     See if called from Thumb mode,
+    //;ORRNE   R0, R0, #OS_CPU_ARM_CONTROL_THUMB                   //;     If yes, set the T-bit.
+    STMFD   SP!, {R0}
+
+    LDR     R0, .OSTCB_Cur                                      //; OSTCBCur->OSTCBStkPtr = SP;
+    LDR     R1, [R0]
+    STR     SP, [R1]
+
+    //LDR     R0, OSTaskSwHook                                  //; OSTaskSwHook();
+    //MOV     LR, PC
+    //BX      R0
+
+    LDR     R0, .OSPrio_Cur                                     //; OSPrioCur = OSPrioHighRdy;
+    LDR     R1, .OSPrio_HighRdy
+    LDRB    R2, [R1]
+    STRB    R2, [R0]
+
+    LDR     R0, .OSTCB_Cur                                      //; OSTCBCur  = OSTCBHighRdy;
+    LDR     R1, .OSTCB_HighRdy
+    LDR     R2, [R1]
+    STR     R2, [R0]
+
+    LDR     SP, [R2]                                            //; SP = OSTCBHighRdy->OSTCBStkPtr;
+
+                                                                //; RESTORE NEW TASK'S CONTEXT:
+    LDMFD   SP!, {R0}                                           //;    Pop new task's CPSR,
+   // ;LDMFD   SP!, {R0}
+   // ;MSR     SPSR_cxsf, R0
+   // ;mov     r0, sp
+   // ;BL	    PrintTaskContext
+    LDMFD   SP!, {R0-R12, LR, PC}                             // ;    Pop new task's context.
+    //LDMFD   SP!, {R0-R12, LR, PC}                             // ;    Pop new task's context.
+
+.OSTCB_Cur:
+	.word OSTCBCur
+.OSPrio_HighRdy:
+	.word OSPrioHighRdy
+
+.global OSIntCtxSw
+.align 0
+OSIntCtxSw:
+    //LDR     R0, OSTaskSwHook                                  //; OSTaskSwHook();
+    //MOV     LR, PC
+    //BX      R0
+
+    LDR     R0, .OSPrio_Cur                                     //; OSPrioCur = OSPrioHighRdy;
+    LDR     R1, .OSPrio_HighRdy
+    LDRB    R2, [R1]
+    STRB    R2, [R0]
+
+    LDR     R0, .OSTCB_Cur                                      //; OSTCBCur  = OSTCBHighRdy;
+    LDR     R1, .OSTCB_HighRdy
+    LDR     R2, [R1]
+    STR     R2, [R0]
+
+    LDR     SP, [R2]                                            //; SP = OSTCBHighRdy->OSTCBStkPtr;
+
+                                                                //; RESTORE NEW TASK'S CONTEXT:
+    LDMFD   SP!, {R0}                                           //;    Pop new task's CPSR,
+    //;MSR     SPSR_cxsf, R0
+
+    LDMFD   SP!, {R0-R12, LR, PC}                             // ;    Pop new task's context.
+
+.OSPrio_Cur:
+	.word OSPrioCur
+
+
+.global OS_CPU_ARM_ExceptResetHndlr
+.align 0
+OS_CPU_ARM_ExceptResetHndlr:
+                                                               // ; LR offset to return from this exception:  0.
+                                                               // ;  (there is no way to return from a RESET exception).
+    STMFD   SP!, {R0-R12, LR}                                  // ; Push working registers.
+    MOV     R3, LR                                             // ; Save link register.
+    MOV     R0, #OS_CPU_ARM_EXCEPT_RESET                       // ; Set exception ID to OS_CPU_ARM_EXCEPT_RESET.
+    B            OS_CPU_ARM_ExceptHndlr                        // ; Branch to global exception handler.
+
+
+.global OS_CPU_ARM_ExceptUndefInstrHndlr
+.align 0
+OS_CPU_ARM_ExceptUndefInstrHndlr:
+                                                                //; LR offset to return from this exception:  0.
+    STMFD   SP!, {R0-R12, LR}                                   //; Push working registers.
+    MOV     R3, LR                                              //; Save link register.
+    MOV     R0, #OS_CPU_ARM_EXCEPT_UNDEF_INSTR                  //; Set exception ID to OS_CPU_ARM_EXCEPT_UNDEF_INSTR.
+    B            OS_CPU_ARM_ExceptHndlr                         //; Branch to global exception handler.
+
+
+.global OS_CPU_ARM_ExceptSwiHndlr
+.align 0
+OS_CPU_ARM_ExceptSwiHndlr:
+                                                                //; LR offset to return from this exception:  0.
+    STMFD   SP!, {R0-R12, LR}                                   //; Push working registers.
+    MOV     R3, LR                                              //; Save link register.
+    MOV     R0, #OS_CPU_ARM_EXCEPT_SWI                          //; Set exception ID to OS_CPU_ARM_EXCEPT_SWI.
+    B            OS_CPU_ARM_ExceptHndlr                         //; Branch to global exception handler.
+
+
+
+.global OS_CPU_ARM_ExceptPrefetchAbortHndlr
+.align 0
+OS_CPU_ARM_ExceptPrefetchAbortHndlr:
+    SUB     LR, LR, #4                                          //; LR offset to return from this exception: -4.
+    STMFD   SP!, {R0-R12, LR}                                   //; Push working registers.
+    MOV     R3, LR                                              //; Save link register.
+    MOV     R0, #OS_CPU_ARM_EXCEPT_PREFETCH_ABORT               //; Set exception ID to OS_CPU_ARM_EXCEPT_PREFETCH_ABORT.
+    B            OS_CPU_ARM_ExceptHndlr                         //; Branch to global exception handler.
+
+
+
+.global OS_CPU_ARM_ExceptDataAbortHndlr
+.align 0
+OS_CPU_ARM_ExceptDataAbortHndlr:
+    SUB     LR, LR, #8                                          //; LR offset to return from this exception: -8.
+    STMFD   SP!, {R0-R12, LR}                                   //; Push working registers.
+    MOV     R3, LR                                              //; Save link register.
+    MOV     R0, #OS_CPU_ARM_EXCEPT_DATA_ABORT                   //; Set exception ID to OS_CPU_ARM_EXCEPT_DATA_ABORT.
+    B            OS_CPU_ARM_ExceptHndlr                         //; Branch to global exception handler.
+
+
+
+.global OS_CPU_ARM_ExceptAddrAbortHndlr
+.align 0
+OS_CPU_ARM_ExceptAddrAbortHndlr:
+    SUB     LR, LR, #8                                          //; LR offset to return from this exception: -8.
+    STMFD   SP!, {R0-R12, LR}                                   //; Push working registers.
+    MOV     R3, LR                                              //; Save link register.
+    MOV     R0, #OS_CPU_ARM_EXCEPT_ADDR_ABORT                   //; Set exception ID to OS_CPU_ARM_EXCEPT_ADDR_ABORT.
+    B            OS_CPU_ARM_ExceptHndlr                         //; Branch to global exception handler.
+
+
+
+.global OS_CPU_ARM_ExceptIrqHndlr
+.align 0
+OS_CPU_ARM_ExceptIrqHndlr:
+    SUB     LR, LR, #4                                          //; LR offset to return from this exception: -4.
+    STMFD   SP!, {R0-R12, LR}                                   //; Push working registers.
+    MOV     R3, LR                                              //; Save link register.
+    MOV     R0, #OS_CPU_ARM_EXCEPT_IRQ                         // ; Set exception ID to OS_CPU_ARM_EXCEPT_IRQ.
+    B            OS_CPU_ARM_ExceptHndlr                        // ; Branch to global exception handler.
+
+
+
+.global OS_CPU_ARM_ExceptFiqHndlr
+.align 0
+OS_CPU_ARM_ExceptFiqHndlr:
+    SUB     LR, LR, #4                                         // ; LR offset to return from this exception: -4.
+    STMFD   SP!, {R0-R12, LR}                                  // ; Push working registers.
+    MOV     R3, LR                                             // ; Save link register.
+    MOV     R0, #OS_CPU_ARM_EXCEPT_FIQ                         // ; Set exception ID to OS_CPU_ARM_EXCEPT_FIQ.
+    B            OS_CPU_ARM_ExceptHndlr                        // ; Branch to global exception handler.
+
+
+
+.global OS_CPU_ARM_ExceptHndlr
+.align 0
+OS_CPU_ARM_ExceptHndlr:
+    MRS     R1, SPSR                                            //; Save CPSR (i.e. exception's SPSR).
+
+                                             //; DETERMINE IF WE INTERRUPTED A TASK OR ANOTHER LOWER PRIORITY EXCEPTION:
+                                               //                 ;   SPSR.Mode = SVC                :  task,
+                                                               // ;   SPSR.Mode = FIQ, IRQ, ABT, UND :  other exceptions,
+                                                               // ;   SPSR.Mode = USR                : *unsupported state*.
+    AND     R2, R1, #OS_CPU_ARM_MODE_MASK
+    CMP     R2,     #OS_CPU_ARM_MODE_SVC
+    BNE     OS_CPU_ARM_ExceptHndlr_BreakExcept
+
+
+
+.global OS_CPU_ARM_ExceptHndlr_BreakTask
+.align 0
+OS_CPU_ARM_ExceptHndlr_BreakTask:
+    MRS     R2, CPSR                                            //; Save exception's CPSR.
+    MOV     R4, SP                                              //; Save exception's stack pointer.
+
+                                                                //; Change to SVC mode & disable interruptions.
+    //MSR     CPSR_c, #(OS_CPU_ARM_CONTROL_INT_DIS | OS_CPU_ARM_MODE_SVC)
+
+                                                                //; SAVE TASK'S CONTEXT ONTO TASK'S STACK:
+    STMFD   SP!, {R3}                                           //;   Push task's PC,
+    STMFD   SP!, {LR}                                           //;   Push task's LR,
+    STMFD   SP!, {R5-R12}                                       //;   Push task's R12-R5,
+    LDMFD   R4!, {R5-R9}                                        //;   Move task's R4-R0 from exception stack to task's stack.
+    STMFD   SP!, {R5-R9}
+    STMFD   SP!, {R1}                                           //;   Push task's CPSR (i.e. exception SPSR).
+
+                                                                //; if (OSRunning == 1)
+    LDR     R1, .OS_Running
+    LDRB    R1, [R1]
+    CMP     R1, #1
+    BNE     OS_CPU_ARM_ExceptHndlr_BreakTask_1
+
+                                                                //; HANDLE NESTING COUNTER:
+    LDR     R3, .OSInt_Nesting                                  //;   OSIntNesting++;
+    LDRB    R4, [R3]
+    ADD     R4, R4, #1
+    STRB    R4, [R3]
+
+    LDR     R3, .OSTCB_Cur                                      //;   OSTCBCur->OSTCBStkPtr = SP;
+    LDR     R4, [R3]
+    STR     SP, [R4]
+
+OS_CPU_ARM_ExceptHndlr_BreakTask_1:
+    MSR     CPSR_cxsf, R2                                       //; RESTORE INTERRUPTED MODE.
+
+                                                                //; EXECUTE EXCEPTION HANDLER:
+    //LDR     R1, .OS_CPU_ExceptHndlr                            // ; OS_CPU_ExceptHndlr(except_type = R0);
+    //MOV     LR, PC
+    //BX      R1
+
+                                                                //; Adjust exception stack pointer.  This is needed because
+                                                                //; exception stack is not used when restoring task context.
+    ADD     SP, SP, #(14 * 4)
+
+                                                                //; Change to SVC mode & disable interruptions.
+    //MSR     CPSR_c, #(OS_CPU_ARM_CONTROL_INT_DIS | OS_CPU_ARM_MODE_SVC)
+
+                                                                //; Call OSIntExit().  This call MAY never return if a ready
+                                                                //;  task with higher priority than the interrupted one is
+                                                                //;  found.
+    LDR     R0, .OSIntExit_
+    MOV     LR, PC
+    BX      R0
+
+                                                                //; RESTORE NEW TASK'S CONTEXT:
+    LDMFD   SP!, {R0}                                           //;    Pop new task's CPSR,
+    MSR     SPSR_cxsf, R0
+
+    LDMFD   SP!, {R0-R12, LR, PC}^                              //;    Pop new task's context.
+
+.OSInt_Nesting:
+	.word OSIntNesting
+.OSIntExit_:
+	.word OSIntExit
+
+
+
+
+.global OS_CPU_ARM_ExceptHndlr_BreakExcept
+.align 0
+OS_CPU_ARM_ExceptHndlr_BreakExcept:
+    MRS     R2, CPSR                                            //; Save exception's CPSR.
+
+                                                                //; Change to SVC mode & disable interruptions.
+    //MSR     CPSR_c, #(OS_CPU_ARM_CONTROL_INT_DIS | OS_CPU_ARM_MODE_SVC)
+
+                                                                //; HANDLE NESTING COUNTER:
+    LDR     R3, .OSInt_Nesting                                  //;   OSIntNesting++;
+    LDRB    R4, [R3]
+    ADD     R4, R4, #1
+    STRB    R4, [R3]
+
+    MSR     CPSR_cxsf, R2                                       //; RESTORE INTERRUPTED MODE.
+
+                                                               // ; EXECUTE EXCEPTION HANDLER:
+    //LDR     R3, .OS_CPU_ExceptHndlr                            //; OS_CPU_ExceptHndlr(except_type = R0);
+    //MOV     LR, PC
+    //BX      R3
+
+                                                                //; Change to SVC mode & disable interruptions.
+    //MSR     CPSR_c, #(OS_CPU_ARM_CONTROL_INT_DIS | OS_CPU_ARM_MODE_SVC)
+
+                                                                //; HANDLE NESTING COUNTER:
+    LDR     R3, .OSInt_Nesting                                  //;   OSIntNesting--;
+    LDRB    R4, [R3]
+    SUB     R4, R4, #1
+    STRB    R4, [R3]
+
+    MSR     CPSR_cxsf, R2                                       //; RESTORE INTERRUPTED MODE.
+
+                                                                //; RESTORE OLD CONTEXT:
+    LDMFD   SP!, {R0-R12, PC}^                                  //; Pull working registers and return from exception.
+
+
+

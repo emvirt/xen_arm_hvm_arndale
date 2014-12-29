@@ -1,0 +1,1251 @@
+/*
+*********************************************************************************************************
+*                                               Freescale i.MX21ADS
+*
+*                                    (c) Copyright 2004, Micrium, Weston, FL
+*                                              All Rights Reserved
+*
+*
+* File : BSP.C
+* By   : Eric Shufro
+*********************************************************************************************************
+*/
+
+#include <includes.h>
+
+/*
+*********************************************************************************************************
+*                                              CONSTANTS
+*********************************************************************************************************
+*/
+
+#define  CLK32                                                32768UL   /* External low frequency clock source frequency in Hz      */
+#define  CLK26M                                            26000000UL   /* External 26 MHz oscillator clock source frequency in Hz  */
+
+#define  LED3                                  (CPU_INT16U)(1 << 14)    /* LED resides on ExtendedIO bit 14                         */
+#define  LED4                                  (CPU_INT16U)(1 << 15)    /* LED resides on ExtendedIO bit 15                         */
+
+                                                                        /* Interrupt vector addresses in VRAM                       */
+#define  BSP_UNDEF_INSTRUCTION_VECTOR_ADDR   (*(CPU_INT32U *)0xFFFFFEF0)
+#define  BSP_SWI_VECTOR_ADDR                 (*(CPU_INT32U *)0xFFFFFEF4)
+#define  BSP_PREFETCH_ABORT_VECTOR_ADDR      (*(CPU_INT32U *)0xFFFFFEF8)
+#define  BSP_DATA_ABORT_VECTOR_ADDR          (*(CPU_INT32U *)0xFFFFFEFC)
+#define  BSP_IRQ_VECTOR_ADDR                 (*(CPU_INT32U *)0xFFFFFF00)
+#define  BSP_FIQ_VECTOR_ADDR                 (*(CPU_INT32U *)0xFFFFFF04)
+/*
+*********************************************************************************************************
+*                                               DATA TYPES
+*********************************************************************************************************
+*/
+
+
+
+/*
+*********************************************************************************************************
+*                                              PROTOTYPES
+*********************************************************************************************************
+*/
+#ifndef CONFIG_XEN
+
+static  void  PLL_Init(void);
+static  void  AITC_Init(void);
+static  void  Tmr_TickInit(void);
+
+static  void  Fast_ISR_AITC_Dummy(void);                                /* Dummy IRQ ISR Handler                                    */
+static  void  Normal_ISR_AITC_Dummy(void);                              /* Dummy FIQ ISR Handler                                    */
+#endif // CONFIG_XEN
+
+/*
+*********************************************************************************************************
+*                                              VARIABLES
+*********************************************************************************************************
+*/
+
+CPU_INT32U    AITC_SpuriousInt;                                         /* Holds the vector number of the spurious ISR              */
+BSP_FNCT_PTR  BSP_IRQ[64];                                              /* Look up table of normal ISRs                             */
+BSP_FNCT_PTR  BSP_FIQ[64];                                              /* Look up table of fast ISRs                               */
+
+
+
+/*
+*********************************************************************************************************
+*                                         BSP INITIALIZATION
+*
+* Description : This function should be called by your application code before you make use of any of the
+*               functions found in this module.
+*
+* Arguments   : none
+*********************************************************************************************************
+*/
+
+void  BSP_Init (void)
+{
+#ifndef CONFIG_XEN
+    PLL_Init();                                                         /* Use default settings, and restart the MPLL               */
+    AITC_Init();                                                        /* Initialize the Vectored Interrupt Controller             */
+    LED_Init();                                                         /* Initialize the I/Os for the LED controls                 */
+    Tmr_TickInit();                                                     /* Initialize the uC/OS-II tick interrupt                   */
+#endif  // CONFIG_XEN
+
+}
+
+/*
+*********************************************************************************************************
+*                                     PLL Initialization
+*
+* Description : Restart the MPLL and wait for the lock flag.
+*
+* Arguments   : none
+*
+* Notes       : 1) The following equation determines the PLL clock output frequency:
+*                      fdpll = (2 * fref) * ((MFI + (MFN / (MFD + 1))) / (PD + 1)
+*                            = (2 * 512 * 32768) * (7 + (115 / 124)) / 1 = 266MHz
+*
+*                           where:
+*                               fref is the reference frequency (512 ?32 kHz, 512 ?32.768 kHz, or 26 MHz) (See bsp.h: CLK32, CLK26M)
+*                                   which is determined by CSCR[16], 0 = CLK32, 1 = CLK26M.
+*                               MFI is an integer part of a multiplication factor (MF)
+*                               MFN is the numerator and MFD is the denominator of the MF
+*                               PD is the predivider factor
+*
+*               2) The MPLL is set to 266MHZ while the SPLL is set to 288MHZ w/ USB OTG = 48MHZ.
+*                  See Table 7-7 "Recommended Settings for Frequency Stability"
+*********************************************************************************************************
+*/
+
+void PLL_Init (void)
+{
+
+
+#ifndef CONFIG_XEN
+    CSCR    = 0x17180607;                                               /* Val out of reset, PRESC = 1, BCLKDIV=IPDIV = 2           */
+                                                                        /* Both SPLL and MPLL enabled                               */
+    
+    MPCTL0  = 0x007B1C73;                                               /* Set MPLL to 266.00 MHZ using 32.768 KHZ Ref Freq         */
+                                                                        /* PD  = MPCTL0[29:26] = 0x00                               */
+                                                                        /* MFD = MPCTL0[25:16] = 0x7B                               */
+                                                                        /* MFI = MPCTL0[13:10] = 0x07                               */
+                                                                        /* MFN = MPCTL0[09:00] = 0x73                               */    
+    
+    PCDR1   = 0x0307071F;                                               /* PERCLK1DIV = 32. Set a reasonable divider for the GPT    */
+                                                                        /* PERCLK2DIV =  8, used by the SDHC and Touch Screen       */ 
+                                                                        /* PERCLK3DIV =  8.                                         */
+                                                                        /* PERCLK4DIV =  4.                                         */
+    
+    CSCR_bit.MPLL_RESTART = 1;                                          /* Restart the MPLL                                         */
+
+    while (MPCTL1_bit.LF == 0) {
+        ;                                                               /* Wait for MPLL Lock                                       */
+    }
+
+    SPCTL0 = 0x83B02227;                                                /* Set SPLL value to 288mhz, USB OTG = 48mhz                */
+                                                                        /* PD  = MPCTL0[29:26] = 0x00                               */
+                                                                        /* MFD = MPCTL0[25:16] = 0x3B0                              */
+                                                                        /* MFI = MPCTL0[13:10] = 0x08                               */
+                                                                        /* MFN = MPCTL0[09:00] = 0x227                              */
+
+    CSCR_bit.SPLL_RESTART = 1;                                          /* Restart the SPLL                                         */
+
+    while (SPCTL1_bit.LF == 0) {
+        ;                                                               /* Wait for SPLL Lock                                       */
+    }
+
+#endif // CONFIG_XEN
+
+}
+            
+/*
+*********************************************************************************************************
+*                                     BSP_ClkFreq
+*
+* Description : This function computes the value of the selected clock source specified by 'selclk'
+*
+* Arguments   : selclk      
+*                   BSP_CLK_ALWAYS  -   "Fast clock used by the logic inside the ARM9 platform and the JTAG circuit to detect the 
+*                                        debug mode and exit Wait-For-Interrupt (WFI) mode. It is required to be always on even when 
+*                                        CLK is stopped during debug mode." 
+*
+*                   BSP_CLK             "Fast clock used only by ARM9 platform for internal operations such as executing 
+*                                        instructions from the cache. It can be gated during doze and stop mode when all the 
+*                                        criteria to enter a low power are met."
+*
+*                   BSP_HCK             "System clock—This signal appears as the BCLK input to the CPU and the HCLK to the system. 
+*                                        This is a continuous clock (when the system is not in sleep mode) It can be gated during 
+*                                        doze and stop mode when all the criteria to enter a low power are met."
+*
+*                   BSP_IPG_CLK         "Internal clock signals used for AIPI1 module accesses (ipg_clk_s1) or AIPI2 module accesses
+*                                       (ipg_clk_s2). These clocks can be programmed to run continuously or toggle whenever there is 
+*                                        an AIPI1 or AIPI2 module access, as determined by the CLOCK_GATING_EN bit in the GPCR in the
+*                                        System Control Chapter."
+*
+*                   BSP_NFC_CLK         "Divided clock output for the Nand Flash Controller module."
+*
+*                   BSP_PERCLK1         "Divided clock output for the peripheral set 1 (UART, Timer, PWM)."
+*
+*                   BSP_PERCLK2         "Divided clock output for the peripheral set 2 (SDHC, CSPI)."
+*
+*                   BSP_PERCLK3         "Divided clock output for LCDC."
+*
+*                   BSP_PERCLK4         "Divided clock output for the CSI.
+*
+*                   BSP_FIRICLK         "Divided clock output for the FIRI module."
+*
+*                   BSP_CLK48M          "Divided to 48 MHz clock for the USB OTG Module."
+*
+*                   BSP_SSI1CLK         "Divided clock output for the SSI1 module."
+*
+*                   BSP_SSI2CLK         "Divided clock output for the SSI2 module."
+*
+* Returns     : Selected clock frequency in Hz. Zero if the clock is disabled. 
+*
+* Notes       : 1) Both DPLLs produce a high frequency clock that exhibits both a low frequency jitter and a low phase jitter. The
+*                  DPLL output clock frequency (fdpll) is determined by the following equation:
+*                     fdpll = (2 * fref) * ((MFI + (MFN / (MFD + 1))) / (PD + 1)
+*
+*                      where:
+*                         fref is the reference frequency (512 ?32 kHz, 512 ?32.768 kHz, or 26 MHz) (See bsp.h: CLK32, CLK26M)
+*                         MFI is an integer part of a multiplication factor (MF)
+*                         MFN is the numerator and MFD is the denominator of the MF
+*                         PD is the predivider factor
+*
+*                  In order to compute the frequency using integer only math, the following manipulation to the formula
+*                  must be made:
+*
+*                          (2 * fref * MFI)              (2 * fref)                
+*                         ------------------  +  ( ------------------------  *  MFN )
+*                             (PD + 1)               (MFD + 1) * (PD + 1)          
+*
+*               2) The SSI output frequency is calcuated as (clkin / (SSI1DIV[6:1] + (0.5 * SSI1DIV[0])))
+*                  In order to compute the frequency using integer only math, the following manipulation to the formula
+*                  must be made:
+*
+*                                  clkin                                              (clkin * 2)
+*                   --------------------------------------------     =    -----------------------------------------
+*                    (SSI1DIV[6:1] * 2)       (1 * SSI1DIV[0])             (SSI1DIV[6:1] * 2) + (1 * SSI1DIV[0])
+*                    -------------------   +  ----------------  
+*                           2                         2
+*********************************************************************************************************
+*/
+
+CPU_INT32U  BSP_ClkFreq (CPU_INT08U  selclk)
+{
+
+
+#ifndef CONFIG_XEN
+    CPU_INT32U  mpll_clk_freq;
+    CPU_INT32U  spll_clk_freq;
+    CPU_INT32U  out_freq;    
+    CPU_INT32U  fref;
+    CPU_INT32U  tmp;
+    CPU_INT16U  mfd;    
+    CPU_INT16U  mfn;        
+    CPU_INT08U  mfi;        
+    CPU_INT08U  pd;        
+    CPU_INT08U  presc;
+
+
+    if (CSCR_bit.MCU_SEL == 0) {                                        /* If MPLL input is set to the internal pre-multiplier      */
+        fref                =  (CLK32 * 512);                           /* The internal pre-multiplier = (slow clock freq * 512)    */
+    } else {                                                            /* otherwise, the MPLL input frequency is the high freq osc */            
+        if (CSCR_bit.OSC26M_DIV1P5 == 0) {                              /* If the OSC26 frequency is pre-divided by 1               */
+            fref            =  (CLK26M);  
+        } else {                                                        /* else, the OSC26 frequency is pre-divided by 1.5          */
+            fref            = ((CLK26M * 2) / 3);   
+        }
+    }
+    
+    if (CSCR_bit.MPEN == 1) {                                           /* If the MPLL is enabled                                   */
+        mfd                 =   MPCTL0_bit.MFD;                         /* Determine PLL multiplier and divider fields              */
+        mfn                 =   MPCTL0_bit.MFN;
+        mfi                 =   MPCTL0_bit.MFI;
+        pd                  =   MPCTL0_bit.PD;
+        mpll_clk_freq       = ((2 * fref * mfi) / (pd + 1)) + ((2 * fref) / ((mfd + 1) * (pd + 1)) * mfn);
+    } else {     
+        mpll_clk_freq       =  (0);                                     /* then the MPLL output frequency is 0 Hz                   */
+    }
+
+    presc                   =   CSCR_bit.PRESC + 1;                     /* Determine the 3 bit MPLL prescaler (PRESC)               */
+    
+    if (CSCR_bit.SP_SEL == 0) {                                         /* If SPLL input is set to the internal pre-multiplier      */
+        fref                =  (CLK32 * 512);                           /* The internal pre-multiplier = (slow clock freq * 512)    */
+    } else {
+        fref                =  (CLK26M);                                /* Otherwise, the SPLL input frequency is the high freq osc */
+    }
+
+    if (CSCR_bit.SPEN == 1) {                                           /* If the SPLL is enabled                                   */
+        mfd                 =   SPCTL0_bit.MFD;                         
+        mfn                 =   SPCTL0_bit.MFN;
+        mfi                 =   SPCTL0_bit.MFI;
+        pd                  =   SPCTL0_bit.PD;
+        spll_clk_freq       = ((2 * fref * mfi) / (pd + 1)) + ((2 * fref) / ((mfd + 1) * (pd + 1)) * mfn);
+    } else {     
+        spll_clk_freq       =  (0);                                     /* then the MPLL output frequency is 0 Hz                   */
+    }
+
+    switch (selclk) {
+        case BSP_CLK_ALWAYS:
+        case BSP_CLK:                                                   /* Compute CLK_ALWAYS and the ARM9 CLK                      */
+             out_freq       =  (mpll_clk_freq / presc);        
+             break;
+             
+        case BSP_HCK:                                                   /* Compute the system bus clock frequency (HCK)             */
+             out_freq       =  (mpll_clk_freq / (presc * (CSCR_bit.BCLKDIV + 1)));        
+             break;
+             
+        case BSP_IPG_CLK:                                               /* Compute the IPG clock (peripheral clock)                 */
+             out_freq       =  (mpll_clk_freq / (presc * 2));                    
+             break;
+             
+        case BSP_NFC_CLK:                                               /* Compute the NAND flash controller clock frequency        */
+             if (PCCR0_bit.NFC_EN == 1) {                               /* If the NAND flash clock is gated                         */
+                 out_freq   =  (mpll_clk_freq / (presc * (PCDR0_bit.NFCDIV + 1)));
+             } else {
+                 out_freq   =  (0);
+             }
+             break;
+             
+        case BSP_PERCLK1:                                               /* Compute the peripheral clock 1 frequency                 */
+             out_freq       =  (mpll_clk_freq / (PCDR1_bit.PCLK_DIV1 + 1));
+             break;
+             
+        case BSP_PERCLK2:                                               /* Compute the peripheral clock 2 frequency                 */
+             out_freq       =  (mpll_clk_freq / (PCDR1_bit.PCLK_DIV2 + 1));                                
+             break;
+             
+        case BSP_PERCLK3:                                               /* Compute the peripheral clock 3 frequency                 */
+             if (PCCR0_bit.PERCLK3_EN == 1) {                           /* If the peripheral clock 3 gating is enabled              */
+                 out_freq   =  (mpll_clk_freq / (PCDR1_bit.PCLK_DIV3 + 1));                                
+             } else {
+                 out_freq   =  (0);
+             }
+             break;
+             
+        case BSP_PERCLK4:                                               /* Compute the peripheral clock 4 frequency                 */
+             if (PCCR0_bit.PERCLK4_EN == 1) {                           /* If the peripheral clock 4 gating is enabled              */
+                 out_freq   =  (mpll_clk_freq / (PCDR1_bit.PCLK_DIV4 + 1));                                
+             } else {
+                 out_freq   =  (0);
+             }
+             break;
+             
+        case BSP_FIRICLK:
+             if (PCCR0_bit.FIRI_EN == 1) {                              /* If FIR clock is gated                                    */
+                 if (CSCR_bit.FIR_SEL == 0) {                           /* If FIR clock is derived from MPLL                        */
+                    out_freq        =  (mpll_clk_freq / (PCDR0_bit.FIRI_DIV + 1));                                
+                 } else {                                               /* else, clock is derived from SPLL                         */
+                    out_freq        =  (spll_clk_freq / (PCDR0_bit.FIRI_DIV + 1));                                                     
+                 }
+             } else {
+                 out_freq           =  (0);                             /* FIR clock is disabled                                    */
+             }
+             break;
+             
+        case BSP_CLK48M:                                                /* Determine the CLK48M (USB OTG) clock frequency           */
+             if (PCCR0_bit.USBOTG_EN == 1) {
+                 out_freq           =  (spll_clk_freq / (CSCR_bit.USB_DIV + 1));
+             } else {
+                 out_freq           =  (0);
+             }
+             break;
+             
+        case BSP_SSI1CLK:
+             if (PCCR0_bit.SSI1_EN == 1) {                              /* If SSI1 clock gating is enabled                          */
+                 if (CSCR_bit.SSI1_SEL == 1) {                          /* If the SSI1 clock is derived from the MPLL               */
+                     if (PCDR0_bit.SSI1DIV <= 1) {                      /* If SSI1 divider is 0 or 1, then divider equals 62        */
+                         out_freq   =  (mpll_clk_freq / 62);            /* SSI1 clock is divided by 62                              */
+                     } else {                                           /* SSI1 clock is divided by SSI1DIV[6:1] + 0.5(SSIDIV1[0])  */
+                         tmp        =  (PCDR0_bit.SSI1DIV & 0x3E);      /* Obtain bits [6:1] of the divider                         */
+                         tmp       *=   2;                              /* Mutiply by 2 to get least common denominator for (1/2)   */
+                         tmp       +=  (PCDR0_bit.SSI1DIV & 0x01);      /* Add 1 if SSI1DIV[0] is set                               */
+                         out_freq   =  (mpll_clk_freq * 2) / tmp;       /* Determine SSI1 clock frequency. See Note 2)              */
+                     }
+                 } else {                                               /* SSI1 clock is derived from the SPLL                      */
+                     if (PCDR0_bit.SSI1DIV <= 1) {                      /* If SSI1 divider is 0 or 1, then divider equals 62        */
+                         out_freq   =  (spll_clk_freq / 62);            /* SSI1 clock is divided by 62                              */
+                     } else {                                           /* SSI1 clock is divided by SSI1DIV[6:1] + 0.5(SSIDIV1[0])  */
+                         tmp        =  (PCDR0_bit.SSI1DIV & 0x3E);      /* Obtain bits [6:1] of the divider                         */
+                         tmp       *=   2;                              /* Mutiply by 2 to get least common denominator for (1/2)   */
+                         tmp       +=  (PCDR0_bit.SSI1DIV & 0x01);      /* Add 1 if SSI1DIV[0] is set                               */
+                         out_freq   =  (spll_clk_freq * 2) / tmp;       /* Determine SSI1 clock frequency. See Note 2)              */
+                     }
+                 }
+             } else {
+                 out_freq           =  (0);                             /* SSI1 clock gating is disabled                            */
+             }             
+             break;
+             
+        case BSP_SSI2CLK:
+             if (PCCR0_bit.SSI2_EN == 1) {                              /* If SSI2 clock gating is enabled                          */
+                 if (CSCR_bit.SSI2_SEL == 1) {                          /* If the SSI2 clock is derived from the MPLL               */
+                     if (PCDR0_bit.SSI2DIV <= 1) {                      /* If SSI2 divider is 0 or 1, then divider equals 62        */
+                         out_freq   =  (mpll_clk_freq / 62);            /* SSI2 clock is divided by 62                              */
+                     } else {                                           /* SSI2 clock is divided by SSI2DIV[6:1] + 0.5(SSIDIV2[0])  */
+                         tmp        =  (PCDR0_bit.SSI2DIV & 0x3E);      /* Obtain bits [6:1] of the divider                         */
+                         tmp       *=   2;                              /* Mutiply by 2 to get least common denominator for (1/2)   */
+                         tmp       +=  (PCDR0_bit.SSI2DIV & 0x01);      /* Add 1 if SSI2DIV[0] is set                               */
+                         out_freq   =  (mpll_clk_freq * 2) / tmp;       /* Determine SSI2 clock frequency. See Note 2)              */
+                     }
+                 } else {                                               /* SSI2 clock is derived from the SPLL                      */
+                     if (PCDR0_bit.SSI2DIV <= 1) {                      /* If SSI2 divider is 0 or 1, then divider equals 62        */
+                         out_freq   =  (spll_clk_freq / 62);            /* SSI2 clock is divided by 62                              */
+                     } else {                                           /* SSI2 clock is divided by SSI2DIV[6:1] + 0.5(SSIDIV2[0])  */
+                         tmp        =  (PCDR0_bit.SSI2DIV & 0x3E);      /* Obtain bits [6:1] of the divider                         */
+                         tmp       *=   2;                              /* Mutiply by 2 to get least common denominator for (1/2)   */
+                         tmp       +=  (PCDR0_bit.SSI2DIV & 0x01);      /* Add 1 if SSI2DIV[0] is set                               */
+                         out_freq   =  (spll_clk_freq * 2) / tmp;       /* Determine SSI2 clock frequency. See Note 2)              */
+                     }
+                 }
+             } else {
+                 out_freq           =  (0);                             /* SSI2 clock gating is disabled                            */
+             }             
+             break;
+             
+        default:
+             out_freq = 0;
+             break;                          
+    }
+    
+    return (out_freq);
+
+#else 
+
+     return (CPU_INT32U)0;
+
+#endif // !CONFIG_XEN
+
+}
+    
+/*
+*********************************************************************************************************
+*                                         BSP INITIALIZATION
+*
+* Description : This function should be called by your application code before you make use of any of the
+*               functions found in this module.
+*
+* Arguments   : none
+*********************************************************************************************************
+*/
+
+void  LED_Init (void)
+{
+
+#ifndef CONFIG_XEN
+
+    LED_Off(0);
+                                                         /* Turn OFF all the LEDs                                    */
+#endif  // !CONFIG_XEN
+
+}
+
+/*
+*********************************************************************************************************
+*                                             LED ON
+*
+* Description : This function is used to control any or all the LEDs on the board.
+*
+* Arguments   : led    is the number of the LED to control
+*                      0    indicates that you want ALL the LEDs to be ON
+*                      1    turns ON LED1 on the board
+*                      2    turns ON LED2 on the board
+*********************************************************************************************************
+*/
+
+void  LED_On (CPU_INT08U led)
+{
+
+#ifndef CONFIG_XEN
+    switch (led) {
+        case 0:
+             EXTENDED_IO   |=   LED3;
+             EXTENDED_IO   |=   LED4;
+             break;
+
+        case 1:
+             EXTENDED_IO   |=   LED3;
+             break;
+
+        case 2:
+             EXTENDED_IO   |=   LED4;
+             break;
+    }
+#endif // !CONFIG_XEN
+	return;
+}
+
+/*
+*********************************************************************************************************
+*                                             LED OFF
+*
+* Description : This function is used to control any or all the LEDs on the board.
+*
+* Arguments   : led    is the number of the LED to turn OFF
+*                      0    indicates that you want ALL the LEDs to be OFF
+*                      1    turns OFF LED1 on the board
+*                      2    turns OFF LED2 on the board
+*********************************************************************************************************
+*/
+
+void  LED_Off (CPU_INT08U led)
+{
+
+#ifndef CONFIG_XEN
+    switch (led) {
+        case 0:
+             EXTENDED_IO   &=  ~LED3;
+             EXTENDED_IO   &=  ~LED4;
+             break;
+
+        case 1:
+             EXTENDED_IO   &=  ~LED3;
+             break;
+
+        case 2:
+             EXTENDED_IO   &=  ~LED4;
+             break;
+    }
+#endif // !CONFIG_XEN
+
+}
+
+/*
+*********************************************************************************************************
+*                                             LED TOGGLE
+*
+* Description : This function is used to toggle any or all the LEDs on the board.
+*
+* Arguments   : led    is the number of the LED to control
+*                      0    indicates that you want to toggle ALL the LEDs
+*                      1    toggles LED1 on the board
+*                      2    toggles LED2 on the board
+*********************************************************************************************************
+*/
+
+void  LED_Toggle (CPU_INT08U led)
+{
+
+#ifndef CONFIG_XEN
+    switch (led) {
+        case 0:
+             EXTENDED_IO   ^=   LED3;
+             EXTENDED_IO   ^=   LED4;
+             break;
+
+        case 1:
+             EXTENDED_IO   ^=   LED3;
+             break;
+
+        case 2:
+             EXTENDED_IO   ^=   LED4;
+             break;
+    }
+#endif // !CONFIG_XEN
+
+}
+
+/*
+*********************************************************************************************************
+*                                    Central Interrupt Manager Initialization
+*********************************************************************************************************
+*/
+#ifndef CONFIG_XEN
+static  void  AITC_Init (void)
+{
+    CPU_INT08U i;
+
+                                                                        /* AHB-Lite IP Interface                                    */
+    AIPI1_PSR0                          =   0x00040304;
+    AIPI1_PSR1                          =   0xFFFBFCFB;
+    AIPI2_PSR0                          =   0x00000000;
+    AIPI2_PSR1                          =   0xFFFFFFFF;    
+
+
+    INTTYPEH                            =   0;                          /* Set all interrupts to normal priority                    */
+    INTTYPEL                            =   0;
+    
+    INTCNTL                             =   0;                          /* Interrupt Vector Table located in high memory            */
+                                                                        /* from 0xFFFFFF00 to 0xFFFFFFFF                            */
+    
+                                                                        /* Initialize the vector RAM                                */
+    //BSP_UNDEF_INSTRUCTION_VECTOR_ADDR   =  (CPU_INT32U)OS_CPU_ARM_ExceptUndefInstrHndlr;
+   // BSP_SWI_VECTOR_ADDR                 =  (CPU_INT32U)OS_CPU_ARM_ExceptSwiHndlr;
+    //BSP_PREFETCH_ABORT_VECTOR_ADDR      =  (CPU_INT32U)OS_CPU_ARM_ExceptPrefetchAbortHndlr;
+    //BSP_DATA_ABORT_VECTOR_ADDR          =  (CPU_INT32U)OS_CPU_ARM_ExceptDataAbortHndlr;
+    //BSP_IRQ_VECTOR_ADDR                 =  (CPU_INT32U)OS_CPU_ARM_ExceptIrqHndlr;
+    //BSP_FIQ_VECTOR_ADDR                 =  (CPU_INT32U)OS_CPU_ARM_ExceptFiqHndlr;
+    
+    for (i = 0; i < 64; i++) {                                          /* Initialize the IRQ and FIQ vector arrays                 */
+        BSP_IRQ[i]                      =   Normal_ISR_AITC_Dummy;
+        BSP_FIQ[i]                      =   Fast_ISR_AITC_Dummy;
+    }
+
+    NIMASK = 0x1F;                                                      /* Unmask all interrupts                                    */
+
+}
+#endif // !CONFIG_XEN
+
+
+/*
+*********************************************************************************************************
+*                                    ATIC - Set IRQ Vector
+*********************************************************************************************************
+*/
+
+void BSP_Set_IRQ_Vector (CPU_INT08U VecNum, BSP_FNCT_PTR BSP_IRQ_VEC)
+{
+
+#ifndef CONFIG_XEN
+    if (VecNum < 64) {
+        BSP_IRQ[VecNum] = BSP_IRQ_VEC;
+    }
+#endif // !CONFIG_XEN
+
+}
+
+/*
+*********************************************************************************************************
+*                                    ATIC - Set FIQ Vector
+*********************************************************************************************************
+*/
+
+void BSP_Set_FIQ_Vector (CPU_INT08U VecNum, BSP_FNCT_PTR BSP_FIQ_VEC)
+{
+
+#ifndef CONFIG_XEN
+    if (VecNum < 64) {
+        BSP_FIQ[VecNum] = BSP_FIQ_VEC;
+    }
+#endif // !CONFIG_XEN
+
+}
+
+/*
+*********************************************************************************************************
+*                                    ATIC - Enable Interrupt
+*********************************************************************************************************
+*/
+
+void BSP_IntEn (CPU_INT08U VecNum)
+{
+
+#ifndef CONFIG_XEN
+    if (VecNum < 64) {
+        INTENNUM = VecNum;
+    }
+#endif //CONFIG_XEN
+
+}
+
+/*
+*********************************************************************************************************
+*                                    ATIC - Disable Interrupt
+*********************************************************************************************************
+*/
+
+void BSP_IntDis (CPU_INT08U VecNum)
+{
+
+#ifndef CONFIG_XEN
+    if (VecNum < 64) {
+        INTDISNUM = VecNum;
+    }
+#endif // !CONFIG_XEN
+
+}
+
+/*
+*********************************************************************************************************
+*                                     DISABLE ALL INTERRUPTS
+*
+* Description : This function disables all interrupts from the interrupt controller.
+*
+* Arguments   : none
+*********************************************************************************************************
+*/
+
+void  BSP_IntDisAll (void)
+{
+                                                  /* Disable all interrupt sources                            */
+#ifndef CONFIG_XEN
+    INTENABLEH  =   0;
+    INTENABLEL  =   0;    
+#endif // !CONFIG_XEN
+
+}
+
+/*
+*********************************************************************************************************
+*                                          EXCEPTION HANDLER
+*
+* Description : This function should be used to handle any exceptions.  It is called by
+*               OS_CPU_ARM_ExceptHndlr(), which is declared in os_cpu_a.asm
+*
+* Arguments   : ID, an identifier used to indicate what type of ARM exception has been triggered
+*               Possible ID values are shown below.
+*                  OS_CPU_ARM_EXCEPT_RESET             0x00
+*                  OS_CPU_ARM_EXCEPT_UNDEF_INSTR       0x01
+*                  OS_CPU_ARM_EXCEPT_SWI               0x02
+*                  OS_CPU_ARM_EXCEPT_PREFETCH_ABORT    0x03
+*                  OS_CPU_ARM_EXCEPT_DATA_ABORT        0x04
+*                  OS_CPU_ARM_EXCEPT_ADDR_ABORT        0x05
+*                  OS_CPU_ARM_EXCEPT_IRQ               0x06
+*                  OS_CPU_ARM_EXCEPT_FIQ               0x07
+*
+* Notes       : The ISR handler being called MUST clear the AIC by clearing any external sources and
+*               then writting the AIC ICCR and EOICR registers.
+*********************************************************************************************************
+*/
+
+#define __raw_writeb(v,a)       (*(volatile unsigned char *)(a) = (v))
+#define __raw_writew(v,a)       (*(volatile unsigned short *)(a) = (v))
+#define __raw_writel(v,a)       (*(volatile unsigned int *)(a) = (v))
+
+#define __raw_readb(a)          (*(volatile unsigned char *)(a))
+#define __raw_readw(a)          (*(volatile unsigned short *)(a))
+#define __raw_readl(a)          (*(volatile unsigned int *)(a))
+
+
+#define TZIC0_BASE_ADDR				(0xE5000000)
+
+#define IRQ_SYSTEM_TIMER_MASK		(0x04000000)
+
+#define oSTATUS				(0x00)		// TZIC INT STAT
+
+extern void timer_handler(void);
+
+void OS_CPU_ExceptHndlr(CPU_DATA  except_id)
+{
+
+#ifndef CONFIG_XEN
+    BSP_FNCT_PTR   pfnct;
+    CPU_INT32U    *sp;
+    CPU_INT32U     vecnum;
+
+
+    if (except_id == OS_CPU_ARM_EXCEPT_FIQ) {
+        vecnum     = (FIVECSR >> 16);                                   /* Get the vector number from the status register    */
+        pfnct      = BSP_FIQ[vecnum];                                   /* Get the function pointer from the array           */
+    
+        if (pfnct != (BSP_FNCT_PTR)0) {                                 /* Make sure we dont have a null pointer             */
+            (*pfnct)();                                                 /* Execute the ISR for the interrupting device       */
+        }
+    } else if (except_id == OS_CPU_ARM_EXCEPT_IRQ) {
+        vecnum     = (NIVECSR >> 16);                                   /* Get the vector number from the status register    */
+        pfnct      = BSP_IRQ[vecnum];                                   /* Get the function pointer from the array           */
+    
+        if (pfnct != (BSP_FNCT_PTR)0) {                                 /* Make sure we dont have a null pointer             */
+            (*pfnct)();                                                 /* Execute the ISR for the interrupting device       */
+        }
+    } else {
+        sp = (CPU_INT32U *)OSTCBCur->OSTCBStkPtr;
+        APP_TRACE_INFO(("\nCPU_ARM_EXCEPTION #%d trapped.\n", except_id));
+        APP_TRACE_INFO(("R0  : 0x%08x\n", *(sp + 0x01)));
+        APP_TRACE_INFO(("R1  : 0x%08x\n", *(sp + 0x02)));
+        APP_TRACE_INFO(("R2  : 0x%08x\n", *(sp + 0x03)));
+        APP_TRACE_INFO(("R3  : 0x%08x\n", *(sp + 0x04)));
+        APP_TRACE_INFO(("R4  : 0x%08x\n", *(sp + 0x05)));
+        APP_TRACE_INFO(("R5  : 0x%08x\n", *(sp + 0x06)));
+        APP_TRACE_INFO(("R6  : 0x%08x\n", *(sp + 0x07)));
+        APP_TRACE_INFO(("R7  : 0x%08x\n", *(sp + 0x08)));
+        APP_TRACE_INFO(("R8  : 0x%08x\n", *(sp + 0x09)));
+        APP_TRACE_INFO(("R9  : 0x%08x\n", *(sp + 0x0A)));
+        APP_TRACE_INFO(("R10 : 0x%08x\n", *(sp + 0x0B)));
+        APP_TRACE_INFO(("R11 : 0x%08x\n", *(sp + 0x0C)));
+        APP_TRACE_INFO(("R12 : 0x%08x\n", *(sp + 0x0D)));
+        APP_TRACE_INFO(("SP  : 0x%08x\n",   sp));
+        APP_TRACE_INFO(("LR  : 0x%08x\n", *(sp + 0x0E)));
+        APP_TRACE_INFO(("PC  : 0x%08x\n", *(sp + 0x0F)));
+        APP_TRACE_INFO(("CPSR: 0x%08x\n", *(sp + 0x00)));
+
+                                                                        /* Infinite loop on other exceptions.                   */
+                                                                        /* Should be replaced by other behavior (reboot, etc.)  */
+        while (DEF_TRUE) {
+            ;
+        }
+    }
+#endif // !CONFIG_XEN
+	if (__raw_readl(TZIC0_BASE_ADDR+oSTATUS) & IRQ_SYSTEM_TIMER_MASK)
+	{
+		timer_handler();
+	}
+}
+
+/*
+*********************************************************************************************************
+*                                    ISR code called when a spurious interrupt occurs
+*
+* Note: Check AITC_SpurousInt for interrupt source vector number
+*********************************************************************************************************
+*/
+#ifndef CONFIG_XEN
+static  void  Fast_ISR_AITC_Dummy (void)
+{
+    AITC_SpuriousInt = FIVECSR;
+    while (DEF_TRUE)
+    {
+        ;
+    }
+}
+#endif // !CONFIG_XEN
+
+#ifndef CONFIG_XEN
+static  void  Normal_ISR_AITC_Dummy (void)
+{
+    AITC_SpuriousInt = NIVECSR;
+    while (DEF_TRUE)
+    {
+        ;
+    }
+}
+#endif // !CONFIG_XEN
+
+
+/*
+*********************************************************************************************************
+*                                   OSView_TmrInit()
+*
+* Description : This function is called by uC/OS-View to initialize the free running timer that is
+*               used to make time measurements.
+*
+* Arguments   : none
+*
+* Returns     : none
+*
+* Note(s)     : 1) It is possible to share a timer with the uC/OS-II time tick on silicon revisions
+*                  M55B and later. However, due to mask set errata, the uC/OS-View timer must be
+*                  seperate since the time tick timer does not free-run. See Tmr_TickInit() comments.
+*********************************************************************************************************
+*/
+
+#if OS_VIEW_MODULE > 0
+void  OSView_TmrInit (void)
+{
+
+#ifndef CONFIG_XEN
+    PCCR1_bit.GPT2_EN   =   1;                                          /* Enable the clock input for GPT2                          */
+    TCTL2               =   0;                                          /* Set control reg to its reset value (GPT stopped)         */
+    TCTL2_bit.CLKSOURCE =   1;                                          /* Timer clock source = perclk1 into prescaler              */
+    TCTL2_bit.FRR       =   1;                                          /* Configure timer to free-run                              */
+    TCTL2_bit.TEN       =   1;                                          /* Enable the timer                                         */    
+#endif // !CONFIG_XEN
+
+}
+#endif
+
+/*
+*********************************************************************************************************
+*                                   OSProbe_TmrInit()
+*
+* Description : This function is called to by uC/Probe Plug-In for uC/OS-II to initialize the
+*               free running timer that is used to make time measurements.
+*
+* Arguments   : none
+*
+* Returns     : none
+*********************************************************************************************************
+*/
+
+#if (uC_PROBE_OS_PLUGIN > 0) && (OS_PROBE_HOOKS_EN == 1)
+void  OSProbe_TmrInit (void)
+{
+#ifndef CONFIG_XEN
+    PCCR1_bit.GPT2_EN   =   1;                                          /* Enable the clock input for GPT2                          */
+    TCTL2               =   0;                                          /* Set control reg to its reset value (GPT stopped)         */
+    TCTL2_bit.CLKSOURCE =   1;                                          /* Timer clock source = perclk1 into prescaler              */
+    TCTL2_bit.FRR       =   1;                                          /* Configure timer to free-run                              */
+    TCTL2_bit.TEN       =   1;                                          /* Enable the timer                                         */    
+#endif // ! CONFIG_XEN
+
+}
+#endif
+
+/*
+*********************************************************************************************************
+*                                   OSView_TmrRd()
+*
+* Description : This function is called to read the current counts of a 32 bit free running timer
+*               for use with uC/OS-View.
+*
+* Arguments   : none
+*
+* Returns     : The 32 bit counts of the timer assuming the timer is an UP counter.
+*
+* Note(s)     : 1) This function assumes the use of GPT1 for the OS Time Tick
+*********************************************************************************************************
+*/
+
+#if OS_VIEW_MODULE > 0
+CPU_INT32U  OSView_TmrRd (void)
+{   
+
+#ifndef CONFIG_XEN
+    return (TCN2);                                                      /* Return the current GPT2 timer value                      */
+#else
+   return (CPU_INT32)0;
+#endif // !CONFIG_XEN
+}
+#endif
+
+/*
+*********************************************************************************************************
+*                                   OSProbe_TmrRd()
+*
+* Description : This function is called to read the current counts of a 16 bit free running timer.
+*
+* Arguments   : none
+*
+* Returns     ; The 16 bit count (in a 32 bit variable) of the timer assuming the timer is an UP counter.
+*********************************************************************************************************
+*/
+
+#if (uC_PROBE_OS_PLUGIN > 0) && (OS_PROBE_HOOKS_EN == 1)
+CPU_INT32U  OSProbe_TmrRd (void)
+{
+#ifndef CONFIG_XEN
+    return (TCN2);                                                      /* Return the current GPT2 timer value                      */
+#else
+   return (CPU_INT32U)0;
+#endif // ! CONFIG_XEN
+
+}
+#endif
+
+/*
+*********************************************************************************************************
+*                                       Tmr_TickInit()
+*
+* Description : This function is called to initialize uC/OS-II's tick source (typically a timer generating
+*               interrupts every 1 to 100 mS).
+*
+* Arguments   : none
+*
+* Note(s)     : 1) The timer is set to interrupt and reset to 0 upon successful match. However,
+*                  free-running timers are ideal in order to share a timer with uC/OS-View and
+*                  prevent the unecessary use of additional resources. Early versions of the i.MX21
+*                  mask set have a GPT errata that causes the counter to reset to 0 even when
+*                  configured for free-run mode. This occurs whenever the match register is written.
+*                  CPU mask M55B and later correct this errata. 
+*********************************************************************************************************
+*/
+#ifndef CONFIG_XEN
+static  void  Tmr_TickInit (void)
+{
+    CPU_INT32U  perclk1_freq;
+    CPU_INT16U  pres;
+    
+
+    PCCR1_bit.GPT1_EN   =   1;                                          /* Enable the clock input for GPT1                          */
+    
+    TCTL1               =   0;                                          /* Set control reg to its reset value (GPT stopped)         */
+    TCTL1_bit.CLKSOURCE =   1;                                          /* Timer clock source = perclk1 into prescaler              */
+    TCTL1_bit.COMP_EN   =   1;                                          /* Enable compare interrupts                                */
+
+    TCTL1_bit.FRR       =   0;                                          /* Set timer to reset upon match                            */
+    
+    perclk1_freq        =   BSP_ClkFreq(BSP_PERCLK1);                   /* Obtain UART reference clock frequency in Hz              */
+    pres                =   TPRER1 + 1;                                 /* Obtain the GPT1 prescaler                                */
+                                                                                                                                                        
+    TCMP1               =  (perclk1_freq / (pres * OS_TICKS_PER_SEC));  /* Configure number of timer counts for OS_TICKS_PER_SEC    */ 
+     
+    BSP_Set_IRQ_Vector(INT_GPT1, Tmr_TickISR_Handler);
+    BSP_IntEn(INT_GPT1);
+
+    TCTL1_bit.TEN       =   1;                                          /* Enable the timer                                         */
+}
+#endif // !CONFIG_XEN
+
+
+/*
+*********************************************************************************************************
+*                                         TIMER #0 IRQ HANDLER
+*
+* Description : This function handles the timer interrupt that is used to generate TICKs for uC/OS-II.
+*
+* Arguments   : none
+*********************************************************************************************************
+*/
+
+void Tmr_TickISR_Handler()
+{
+#ifndef CONFIG_XEN
+    TSTAT1_bit.COMP     =   1;                                          /* Clear the match compare interrupt flag                   */
+    OSTimeTick();     								/* Call uC/OS-II's OSTimeTick()                             */
+#endif // !CONFIG_XEN
+}
+
+/*
+*********************************************************************************************************
+*                                                   Ser_Init
+*
+* Description :   Initializes one of the UARTs on the i.MX21 for use with TTCP
+*
+* Arguments   :   None.
+*
+* Returns     :   None.
+*********************************************************************************************************
+*/
+
+void  Ser_Init (CPU_INT32U baud)
+{
+#ifndef CONFIG_XEN
+    CPU_INT32U  perclk1_freq;
+    CPU_INT32U  ubir;
+    CPU_INT32U  ubmr;    
+    
+    
+    perclk1_freq            =   BSP_ClkFreq(BSP_PERCLK1);               /* Obtain UART reference clock frequency in Hz              */
+
+    ubir                    =   baud * 16;                              /* Set an initial baud numerator based on the given formula */
+    ubmr                    =   perclk1_freq;                           /* Set the divider to the module reference frequency        */
+    
+    while ((ubir > 65535) || (ubmr > 65535)) {                          /* Divide the numerator and denominator by 2 until the      */
+        ubir   >>= 1;                                                   /* values are small enough to fit into the registers        */
+        ubmr   >>= 1;                                                   /* Note: The RFDIV bits for the selected UART must be make  */
+    }                                                                   /* a divider of 1 (register bits value = 5                  */
+    
+#if TTCP_COMM_SEL == TTCP_UART_1
+    PCCR0_bit.UART1_EN      =   1;                                      /* Enable UART module clock                                 */
+    
+    UCR1_1                  =   0;                                      /* DISABLE the UART to reprogram it!                        */
+    UCR2_1_bit._SRST        =   0;                                      /* Soft reset UART1. No UART reg accesses for 4 ipg_clocks  */
+    
+    PTE_GIUS_bit.PIN12      =   0;                                      /* Configure GPIO Port E for use with UART1                 */
+    PTE_GPR_bit.PIN12       =   0;                                      /* while the UART is completing the reset procedure         */
+    PTE_GIUS_bit.PIN13      =   0;
+    PTE_GPR_bit.PIN13       =   0;
+
+    UCR3_1_bit.RXDMUXSEL    =   1;                                      /* Configure the Rx pin multiplexor for use with the UART   */
+    
+    USR1_1                  =   0xFFFFFFFF;                             /* Clear pending interrupts                                 */
+    USR2_1                  =   0xFFFFFFFF;                             /* Clear pending interrupts                                 */
+
+    UFCR_1_bit.RXTL         =   1;                                      /* Rx FIFO triggers an interrupt when >= 1 byte received    */    
+    UFCR_1_bit.TXTL         =   1;                                      /* Tx FIFO triggers an Int when < 1 byte in the Tx FIFO     */
+    
+    UFCR_1_bit.RFDIV        =   5;                                      /* Set the reference divier bits to '5' which sets div = 1  */
+
+                                                                        /* Update baud rate, UBIR must be written before UBMR       */
+    UBIR_1                  =  (ubir - 1);                              /* Sub 1 before writing to the UBIR register, program baud  */
+    UBMR_1                  =  (ubmr - 1);                              /* Sub 1 before writing to the UBMR register, program baud  */
+    
+    UCR2_1                  =   0x00004027;                             /* UART1, Do not reset                                      */
+                                                                        /* 8 Bits, 1 Stop, No Parity                                */
+                                                                        /* Enable the Receiver                                      */
+                                                                        /* Enable the Transmitter                                   */
+                                                                        /* Ignore the RTS pin                                       */
+            
+    UCR1_1_bit.UARTEN       =   1;                                      /* Enable the UART                                          */
+#endif
+
+#if TTCP_COMM_SEL == TTCP_UART_4
+    PCCR0_bit.UART4_EN      =   1;                                      /* Enable UART module clock                                 */
+
+    UCR1_4                  =   0;                                      /* DISABLE the UART to reprogram it                         */
+    UCR2_4_bit._SRST        =   0;                                      /* Soft reset UART1. No UART reg accesses for 4 ipg_clocks  */
+    
+    PTB_GIUS_bit.PIN28      =   0;                                      /* Configure PB28 (UART4_TXD) pin for peripheral use        */
+    PTB_GPR_bit.PIN28       =   1;                                      /* Set the pin for alternate function (UART4_TXD function)  */
+
+    PTB_GIUS_bit.PIN29      =   1;                                      /* Configure PB29 as a GPIO pin                             */
+    PTB_DDIR_bit.PIN29      =   0;                                      /* Configure PB29 as an input bit                           */
+    PTB_ICONFA2_bit.PIN29   =   0;                                      /* Configure PB29 (USBH1_TXDP / UART4 Rx pin) as A_OUT      */
+    FMCR_bit.UART4_RXD_CTL  =   0;                                      /* Set USBH1_TXDP (PB29) GPIO AOUT as Rx input to UART4     */
+    
+    UCR3_4_bit.RXDMUXSEL    =   1;                                      /* Configure the Rx pin multiplexor for use with the UART   */
+    
+    USR1_4                  =   0xFFFFFFFF;                             /* Clear pending interrupts                                 */
+    USR2_4                  =   0xFFFFFFFF;                             /* Clear pending interrupts                                 */
+
+    UFCR_4_bit.RXTL         =   1;                                      /* Rx FIFO triggers when 1 byte received                    */    
+    UFCR_4_bit.TXTL         =   1;                                      /* Tx FIFO triggers when 1 byte received                    */
+    
+    UFCR_4_bit.RFDIV        =   5;                                      /* Set the reference divier bits to '5' which sets div = 1  */
+                                                                        /* This is critical for the baud rate calculation. Must = 1 */
+    
+                                                                        /* Update baud rate, UBIR must be written before UBMR       */
+    UBIR_4                  =  (ubir - 1);                              /* Sub 1 before writing to the UBIR register, program baud  */
+    UBMR_4                  =  (ubmr - 1);                              /* Sub 1 before writing to the UBMR register, program baud  */
+    
+    UCR2_4                  =   0x00004027;                             /* UART4, Do not reset                                      */
+                                                                        /* 8 Bits, 1 Stop, No Parity                                */
+                                                                        /* Enable the Receiver                                      */
+                                                                        /* Enable the Transmitter                                   */
+                                                                        /* Ignore the RTS pin                                       */
+            
+    UCR1_4_bit.UARTEN       =   1;                                      /* Enable the UART                                          */
+#endif
+
+
+#endif // !CONFIG_XEN
+  
+}
+
+#ifdef uC_TTCP_MODULE
+/*
+*********************************************************************************************************
+*                                                Ser_WrByte
+*
+* Description :   Transmits a byte on the configured UART
+*
+* Arguments   :   A byte containing the value of the charcater to output.
+*
+* Returns     :   None.
+*
+* Notes       :   This function waits for the UART to become ready. Interrupts are not enabled.
+*********************************************************************************************************
+*/
+
+void  Ser_WrByte (CPU_INT08U c)
+{
+#if TTCP_COMM_SEL == TTCP_UART_1
+    while (USR1_1_bit.TRDY == 0) {                                      /* Wait until Tx FIFO can hold more data                    */
+        ;
+    }
+    UTXD_1 = (CPU_INT32U)c;
+#endif
+
+#if TTCP_COMM_SEL == TTCP_UART_4
+    while (USR1_4_bit.TRDY == 0) {                                      /* Wait until Tx FIFO can hold more data                    */
+        ;
+    }
+    UTXD_4 = (CPU_INT32U)c;
+#endif
+}
+
+
+/*
+*********************************************************************************************************
+*                                                Ser_WrStr
+*
+* Description :   Transmit a character string from the configured UART
+*
+* Arguments   :   A string of characters.
+*
+* Returns     :   None.
+*********************************************************************************************************
+*/
+
+void  Ser_WrStr (CPU_INT08U *s)
+{
+    while (*s) {
+        Ser_WrByte(*s++);
+    }
+}
+
+
+/*
+*********************************************************************************************************
+*                                                Ser_RdByte
+*
+* Description :   Reads a byte from the configured UART
+*
+* Arguments   :   None.
+*
+* Returns     :   A byte containing the value of the received charcater.
+*
+* Notes       :   This function waits for the UART to become ready. Interrupts are not enabled.
+*********************************************************************************************************
+*/
+
+CPU_INT08U Ser_RdByte (void)
+{
+#ifndef CONFIG_XEN
+    CPU_INT08U  c;
+    
+
+#if TTCP_COMM_SEL == TTCP_UART_1    
+    while (USR1_1_bit.RRDY == 0) {                                      /*  Wait for data to arrive                                 */
+        OSTimeDly(2);
+    }
+    c = (CPU_INT08U)(URXD_1 & 0x00FF);                                  /* Read the character from the configured UART              */
+#endif
+
+#if TTCP_COMM_SEL == TTCP_UART_4    
+    while (USR1_4_bit.RRDY == 0) {                                      /*  Wait for data to arrive                                 */
+        OSTimeDly(2);
+    }
+    c = (CPU_INT08U)(URXD_4 & 0x00FF);                                  /* Read the character from the configured UART              */
+#endif
+   
+    return (c);
+
+#else
+
+    return (CPU_INT08U) 0;
+
+#endif // !CONFIG_XEN
+
+}
+
+
+/*
+*********************************************************************************************************
+*                                                Ser_RdStr
+*
+* Description :   Reads a string from a debug serial port.
+*                 This funcion reads a string from a serial port. This call blocks until a
+*                 character appears at the port and the last character is a Carriage
+*                 Return (0x0D).
+*
+* Arguments   :   The address of a character string to store the received string.
+*
+* Returns     :   A string with the bytes received.
+*********************************************************************************************************
+*/
+
+void  Ser_RdStr (CPU_INT08U *s, CPU_INT16U numBytes)
+{
+    CPU_INT08U  b;
+    CPU_INT08U  i;
+
+
+    i = 0;
+    b = 0;
+    while ( b != 13 || i == numBytes) {
+        b = Ser_RdByte();
+        b = b & 0x000000FF;
+        if (b == 8) {
+            i--;
+            s[i] = ' ';
+            Ser_Printf("%c %c",b,b);
+        } else {
+            s[i] = b;
+            Ser_Printf("%c",s[i]);
+            i++;
+        }
+    }
+    s[i] = '\0';
+    Ser_Printf("\n");
+}
+
+
+/*
+*********************************************************************************************************
+*                                                Ser_Printf
+*
+* Description :   Formatted outout to the serial port.
+*                 This funcion reads a string from a serial port. This call blocks until a
+*                 character appears at the port and the last character is a Carriage
+*                 Return (0x0D).
+*
+* Arguments   :   Format string follwing the C format convention.
+*
+* Returns     :   None.
+*********************************************************************************************************
+*/
+
+void  Ser_Printf (CPU_CHAR *format, ...)
+{
+   static  CPU_INT08U   buffer[80 + 1];
+           va_list      vArgs;
+
+
+   va_start(vArgs, format);
+   vsnprintf((char *)buffer, sizeof(buffer), (char const *)format, vArgs);
+   va_end(vArgs);
+
+   Ser_WrStr((CPU_CHAR*) buffer);
+}
+
+
+#endif
+

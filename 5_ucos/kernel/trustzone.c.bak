@@ -1,0 +1,199 @@
+/*
+ *  TOPPERS/ASP Kernel
+ *      Toyohashi Open Platform for Embedded Real-Time Systems/
+ *      Advanced Standard Profile Kernel
+ *
+ *  Copyright (C) 2000-2003 by Embedded and Real-Time Systems Laboratory
+ *                              Toyohashi Univ. of Technology, JAPAN
+ *  Copyright (C) 2006-2007 by Embedded and Real-Time Systems Laboratory
+ *              Graduate School of Information Science, Nagoya Univ., JAPAN
+ *
+ *  上記著作権者は，以下の(1)〜(4)の条件を満たす場合に限り，本?フトウェ
+ *  ア（本?フトウェアを改変したものを含む．以下同じ）を使用・複製・改
+ *  変・再配布（以下，利用と呼ぶ）することを無償で許諾する．
+ *  (1) 本?フトウェアを?ースコードの形で利用する場合には，上記の著作
+ *      権表示，この利用条件および下記の無保証規定が，そのままの形で?ー
+ *      スコード中に含まれていること．
+ *  (2) 本?フトウェアを，ライブラリ形式など，他の?フトウェア開発に使
+ *      用できる形で再配布する場合には，再配布に伴うド?ュメント（利用
+ *      者?ニュアルなど）に，上記の著作権表示，この利用条件および下記
+ *      の無保証規定を掲載すること．
+ *  (3) 本?フトウェアを，機器に組み込むなど，他の?フトウェア開発に使
+ *      用できない形で再配布する場合には，次のいずれかの条件を満たすこ
+ *      と．
+ *    (a) 再配布に伴うド?ュメント（利用者?ニュアルなど）に，上記の著
+ *        作権表示，この利用条件および下記の無保証規定を掲載すること．
+ *    (b) 再配布の形態を，別に定める方法によって，TOPPERSプロジェ?トに
+ *        報告すること．
+ *  (4) 本?フトウェアの利用により直接的または間接的に生じるいかなる損
+ *      害からも，上記著作権者およびTOPPERSプロジェ?トを免責すること．
+ *      また，本?フトウェアのユーザまたはエンドユーザからのいかなる理
+ *      由に基づく請求からも，上記著作権者およびTOPPERSプロジェ?トを
+ *      免責すること．
+ *
+ *  本?フトウェアは，無保証で提供されているものである．上記著作権者お
+ *  よびTOPPERSプロジェ?トは，本?フトウェアに関して，特定の使用目的
+ *  に対する適合性も含めて，いかなる保証も行わない．また，本?フトウェ
+ *  アの利用により直接的または間接的に生じたいかなる損害に関しても，そ
+ *  の責任を負わない．
+ *
+ *  @(#) $Id: target_config.c 369 2007-07-18 12:48:50Z honda $
+ */
+
+/*
+ * ?ーゲット依存モジュール（PB1176T用）
+ */
+
+//#include "kernel_impl.h"
+//#include <sil.h>
+//#include "itron.h"
+//#include "mmu.h"
+#include <os/types.h>
+#include <trustzone/trustzone.h>
+#include <trustzone/switch.h>
+#include <trustzone/communication.h>
+
+/*
+ * 各割込みの割込み要求禁止フラグの状態
+ */
+//uint32_t idf;
+
+/*
+ * 現在の割込み優先度?ス?の値
+ */
+//PRI ipm;
+
+/*
+ *  割込み属性が設定されているかを判別するための変数
+ */
+//uint32_t	bitpat_cfgint;
+
+/*
+ *  ???ーテーブルの先頭番地
+ */
+extern void *vector_table;
+
+int nonsecure_fault;
+
+/*
+ *  ?ーゲット依存の初期化
+ */
+
+void
+trustzone_initialize(void)
+{
+	nonsecure_fault = 0;
+
+	/*
+	 * Initialize TZPC
+	 */
+	s5pc100_tzpc_init();
+	
+	/*
+	 *  ARM依存の初期化
+	 */
+//	core_initialize();
+
+	/*
+	 * Initialize the TCM
+	 */
+
+
+	/*
+		S5PC100 does not support TCM.
+		Thank You Samsung !!
+	*/
+	
+	//pb1176t_init_tcm();
+
+	/*
+	 * MMUの初期化
+	 */
+	//s5pc100_mmu_init();
+
+	/*
+	 * CACHE の初期化
+	 */
+	//pb1176_cache_init();
+
+	/*
+	 * 各割込みの割込み要求禁止フラグ全禁止
+	 */
+//	idf = ~0U;
+
+	/*
+	 * 割込み優先度?ス?は0
+	 */
+//	ipm = 0U;
+
+	/*
+	 * 全ての割込みを?ス?
+	 */
+	//tzic_disable_int(~0U);
+
+	/*
+	 *  割込み属性が設定されているかを判別するための変数を初期化する．
+	 */
+//	bitpat_cfgint = 0U;
+
+	/*
+	 *  sys_putc が可能になるようにUARTを初期化
+	 */
+//	pb1176t_init_uart();
+
+	/*
+	 * 割込み???テーブルを VECTOR_TABLE_BASE レジス?に設定する
+	 */
+	CP15_SET_VBAR((uint32_t) &vector_table);
+
+	tz_communication_init();
+}
+
+#define __raw_writeb(v,a)       (*(volatile unsigned char *)(a) = (v))
+#define __raw_writew(v,a)       (*(volatile unsigned short *)(a) = (v))
+#define __raw_writel(v,a)       (*(volatile unsigned int *)(a) = (v))
+
+#define __raw_readb(a)          (*(volatile unsigned char *)(a))
+#define __raw_readw(a)          (*(volatile unsigned short *)(a))
+#define __raw_readl(a)          (*(volatile unsigned int *)(a))
+
+
+#define TZIC0_BASE_ADDR				(0xE5000000)
+
+//#define TZIC_UNLOCK_CODE			(0xACCE550)
+
+#define oINTEN				(0x08)		// TZIC INT EN
+#define oFIQEN				(0x0C)		// TZIC FIQ EN
+#define oFIQENCLEAR			(0x10)		// TZIC FIQ EN CLEAR
+#define oLOCKEN				(0x1C)		// TZIC LOCK EN
+
+#define TZPCR0SIZE					0xE3800000
+
+void tz_communication_handler(void) {
+    printk("TZ Communication!!!\n");
+    // printk("size : %d\n", tz_communication_get_size());
+    // printk("id : %d\n", tz_communication_get_id());
+	tz_communication_get_buffer()[tz_communication_get_size()] = '\0';
+        printk("buf : %s\n", tz_communication_get_buffer());
+	tz_communication_set_ret_value(0);
+//	__raw_writel(TZIC_UNLOCK_CODE, TZIC0_BASE_ADDR+oLOCKEN);
+//	__raw_writel(0x1FF, TZPCR0SIZE);
+//	__raw_writel(0x1, TZIC0_BASE_ADDR+oLOCKEN);
+	safeg_switch_to_nt();
+}
+
+void tz_pagefault_handler(int lr, int ptb, int addr, int status) {
+	printk("TZ pagefault!!!\n");
+	printk("pagefault lr : %x\n", lr);
+	printk("pagefault ptb : %x\n", ptb);
+	printk("pagefault addr : %x\n", addr);
+	printk("pagefault status : %x\n", status);
+        tz_communication_clear();
+//	if (addr==0xF4700000) {
+		__raw_writel(TZIC_UNLOCK_CODE, TZIC0_BASE_ADDR+oLOCKEN);
+		__raw_writel(0x17, TZPCR0SIZE);
+		__raw_writel(0x1, TZIC0_BASE_ADDR+oLOCKEN);
+		nonsecure_fault = 0;
+//	}
+	safeg_switch_to_nt();
+}

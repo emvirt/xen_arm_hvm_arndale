@@ -1,0 +1,28 @@
+include $(CURDIR)/Config.mk
+
+XENO_TARGET_IMAGE := mini-os
+
+OBJS		:= arch/$(XENO_TARGET_ARCH)/$(XENO_TARGET_ARCH).o
+OBJS		+= kernel/built_in.o
+OBJS		+= lib/built_in.o
+
+default: $(XENO_TARGET_IMAGE)
+
+$(XENO_TARGET_IMAGE): build
+	$(LD) $(LDFLAGS) -N -T arch/$(XENO_TARGET_ARCH)/march-$(XENO_TARGET_SUBARCH)/$(XENO_TARGET_SUBARCH).lds $(OBJS) -o $@.elf
+	$(OBJCOPY) -O binary -R .note -R .comment -S $(XENO_TARGET_IMAGE).elf $(XENO_TARGET_IMAGE).bin
+
+build:
+	[ -e include/asm ] || ln -sf $(XEN_BASE_DIR)/xen/include/asm-$(XENO_TARGET_ARCH) include/asm
+	[ -e include/public] ] || ln -sf $(XEN_BASE_DIR)/xen/include/public include/public
+	[ -e /include/xen ] || ln -sf $(XEN_BASE_DIR)/xen/include/xen include/xen
+	[ -e /include/xen-asm ] || ln -sf $(XEN_BASE_DIR)/xen/include/xen-asm include/xen-asm
+	$(MAKE) -C arch/$(XENO_TARGET_ARCH)
+	$(MAKE) -C kernel
+	$(MAKE) -C lib
+
+clean:
+	find . -type f -name '*.o' | xargs rm -f
+	rm -f *.o *~ core $(XENO_TARGET_IMAGE).elf $(XENO_TARGET_IMAGE).bin
+	find . -type l | xargs rm -f
+

@@ -1,0 +1,9 @@
+#!/bin/bash
+
+make clean
+
+make zImage -j 24
+
+make dtbs
+
+

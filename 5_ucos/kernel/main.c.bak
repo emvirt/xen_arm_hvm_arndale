@@ -1,0 +1,658 @@
+/*
+*********************************************************************************************************
+*                                                uC/OS-II
+*                                          The Real-Time Kernel
+*
+*                                 (c) Copyright 2004, Micrium, Weston, FL
+*                                          All Rights Reserved
+*
+*                                            Freescale i.MX21ADS
+*                                              Sample code
+* File : APP.C
+* By   : Eric Shufro
+*
+* Xen-Arm version by OS LAB, Korea University (mrpark@os.korea.ac.kr)
+*********************************************************************************************************
+*/
+
+
+#include <includes.h>
+#include <net/net.h>
+
+#include <os/lib.h>
+
+#include <trustzone/switch.h>
+#include <trustzone/communication.h>
+extern void trustzone_initialize(void);
+
+extern void s5pc1xx_timer_init(void);
+
+#define PUSH_DEAD 0
+
+/*
+*********************************************************************************************************
+*                                               CONSTANTS
+*********************************************************************************************************
+*/
+
+/*
+*********************************************************************************************************
+*                                          FUNCTION PROTOTYPES
+*********************************************************************************************************
+*/
+
+static  void  AppTaskStart(void *p_arg);
+static  void  AppTaskCreate(void);
+
+#if (uC_PROBE_OS_PLUGIN > 0)
+static  void  AppProbeCallback(void);
+#endif
+
+//#if uC_TCPIP_MODULE > 0
+void AppInit_TCPIP();
+//#endif
+
+/*
+*********************************************************************************************************
+*                                               VARIABLES
+*********************************************************************************************************
+*/
+
+static  OS_STK  AppTaskStartStk[APP_TASK_START_STK_SIZE];
+
+#if uC_TCPIP_MODULE > 0
+        //NET_IP_ADDR   ip;
+        //NET_IP_ADDR   msk;
+        //NET_IP_ADDR   gateway;
+        //NET_ERR       err;
+#endif
+
+
+/*
+*********************************************************************************************************
+*                                             C ENTRY POINT
+*********************************************************************************************************
+*/
+
+int sta_ker(void)
+{
+        CPU_INT08U  err;
+
+	printk("uC/OS-II\n");
+			
+
+//   	BSP_IntDisAll();                                                    /* Disable ALL interrupts to the interrupt controller       */
+        
+	trustzone_initialize();
+	s5pc1xx_timer_init();
+   	OSInit();                                                           /* Initialize uC/OS-II                                      */
+                                                                     /* Create start task    */  
+
+   	OSTaskCreateExt(AppTaskStart,
+                   NULL,
+                   (OS_STK *)&AppTaskStartStk[APP_TASK_START_STK_SIZE - 1],
+                   APP_TASK_START_PRIO,
+                   APP_TASK_START_PRIO,
+                   (OS_STK *)&AppTaskStartStk[0],
+                   APP_TASK_START_STK_SIZE,
+                   NULL,
+                   OS_TASK_OPT_STK_CHK | OS_TASK_OPT_STK_CLR);
+
+        
+        /* Assign names to created tasks                            */
+#if OS_TASK_NAME_SIZE > 11
+   	OSTaskNameSet(APP_TASK_START_PRIO, (INT8U *)"Start Task", (INT8U *)&err);
+#endif
+
+
+	// TODO 
+	
+//	local_irq_enable();
+
+	printk("going to start OS\n");
+
+//	volatile struct safeg_smc_args ret_args;
+//	safeg_switch_to_nt(/*&ret_args*/);
+
+	OSStart();                                                          /* Start uC/OS-II                                           */
+
+	return 0;
+	
+}
+
+
+
+
+
+/*$PAGE*/
+/*
+*********************************************************************************************************
+*                                              STARTUP TASK
+*
+* Description : This is an example of a startup task.  As mentioned in the book's text, you MUST
+*               initialize the ticker only once multitasking has started.
+* Arguments   : p_arg is the argument passed to 'AppStartTask()' by 'OSTaskCreate()'.
+* Notes       : 1) The first line of code is used to prevent a compiler warning because 'p_arg' is not
+*                  used.  The compiler should not generate any code for this statement.
+*               2) Interrupts are enabled once the task start because the I-bit of the CCR register was
+*                  set to 0 by 'OSTaskCreate()'.
+*********************************************************************************************************
+*/
+
+static  void  AppTaskStart (void *p_arg)
+{
+    (void)p_arg;                                                        /* Prevent compiler warning                                 */
+
+    printk("AppTaskStart\n");
+//    BSP_Init();
+
+#if OS_TASK_STAT_EN > 0
+    printk("OSStatInit \n");
+    OSStatInit();                                                       /* Start stats task                                         */
+#endif
+
+#if (uC_PROBE_OS_PLUGIN > 0)
+    OSProbe_Init();
+    OSProbe_SetCallback(AppProbeCallback);
+    OSProbe_SetDelay(50);
+#endif
+
+#if (uC_PROBE_COM_MODULE > 0)
+    ProbeCom_Init();                                                    /* Initialize the uC/Probe communications module            */
+    ProbeRS232_Init(115200);
+    ProbeRS232_RxIntEn();
+#endif
+
+#if uC_TCPIP_MODULE > 0
+    printk("initialize AppInit_TCPIP\n");
+    AppInit_TCPIP();                                                    /* Initialize uC/TCP-IP and associated appliations          */
+#endif
+
+    AppTaskCreate();                                                    /* Create additional applicaiton tasks                      */
+    
+//    LED_Off(0);                                                         /* Turn on ALL the LEDs                                     */
+
+    while (DEF_TRUE) {                                                  /* Task body, always written as an infinite loop.           */
+//       LED_Toggle(2);                                                  /* Toggle LED2, TTCP will toggle LED1 when in test          */
+      OSTimeDlyHMSM(1, 0, 0, 500);
+    
+    }
+}
+
+/*
+*********************************************************************************************************
+*                              CREATE ADDITIONAL APPLICATION TASKS
+static  void  AppTaskCreate (void)
+{
+    return;
+}
+*********************************************************************************************************
+*/
+
+#include <ucos_ii.h>
+
+#define N_TASKS	2   
+//jjw_org ::#define TASK_STK_SIZE	0x500
+#define N_FRAMES    0x100
+#define N_BLOCKS    0x10
+#define PRODUCER_PRIO	1
+#define CONSUMER_PRIO	0
+
+// Default data Structure
+//jjw_org :: OS_STK		    TaskStk[N_TASKS][TASK_STK_SIZE];
+/*INT32S		    result;
+OS_EVENT	    *prod_sem;
+OS_EVENT	    *fail_sem;
+OS_EVENT	    *begin_sem;
+INT32U		    fail;
+INT32S		    base[16][16];
+INT32S		    target[N_FRAMES][N_BLOCKS][16][16];
+INT32S		    src[N_FRAMES][N_BLOCKS][16][16];
+INT32S		    res_tick_diff[0x10];
+INT32S		    total_count;
+INT32S		    fail_count;
+INT32S		    begin;*/
+
+/* 
+* Traditional Producer/Consumer example
+* producer 0 
+* consumer 1
+*/
+//extern void Producer(void *pdata);
+//extern void Consumer(void *pdata);
+
+
+#define TASK_STK_SIZE   0x400
+OS_STK  FFT_STK[TASK_STK_SIZE];
+OS_STK  FFT_STK2[TASK_STK_SIZE];
+//#define PRIO_FFT       OS_LOWEST_PRIO+1 
+#define PRIO_FFT       0 
+
+#define TEST1_PERIOD 500 
+#define TEST1_EXCUTION 7
+#define TEST2_PERIOD 750
+#define TEST2_EXCUTION 9
+
+
+	INT32U TEST2_START_CLK;
+	INT32U TEST1_START_CLK ;
+	INT32U COUNT_CLK ;
+void test1()
+{
+	INT32U end_clk = 0;
+	INT32U count_clk = 0;
+	INT32U count = 0;
+	INT32U temp=1;
+	INT32U ALL_TEST_DID;
+
+	volatile INT32U systime_offset;	
+//	systime_offset = ((struct vcpu_time_info *)&HYPERVISOR_shared_info->vcpu_info[0].time)->system_time & 0xFFFFFFFF;
+	systime_offset = 0;
+	OSTimeSet(systime_offset);
+	TEST2_START_CLK = OSTimeGet();
+	TEST1_START_CLK = TEST2_START_CLK;
+
+	for(;;)
+	{
+	
+	
+		temp = OSTimeGet();//TEST1_START_CLK; 
+//		printk("1: first start : %d incoming %d virtual_time %d\n",TEST1_START_CLK,temp,virtual_time);
+
+		while(	count < TEST1_EXCUTION)
+		{
+			//workload
+			if(temp != count_clk)
+			{
+				count++;
+				count_clk = temp;
+//				printk("1: my first test::virtual : %d count : %d systemtime: %d \n", virtual_time, count, Physical_Time);
+				 	
+			}
+			//workload
+			temp = OSTimeGet();//TEST1_START_CLK; 
+		}
+		count = 0;
+		
+		end_clk = temp+1;
+		
+		ALL_TEST_DID = end_clk - TEST1_START_CLK;		
+		
+		TEST1_START_CLK += TEST1_PERIOD;
+
+		end_clk = Physical_Time;
+//jjw
+		if ((INT32S)(TEST1_PERIOD - ALL_TEST_DID) >= 0) {
+			printk("1: dom2 :end_clk %d virtual %d OSTimeDly( %d ) until %d \n", end_clk,virtual_time, TEST1_PERIOD - ALL_TEST_DID, TEST1_START_CLK);
+			OSTimeDly(TEST1_PERIOD - ALL_TEST_DID +1);
+		} else {
+			printk("1: -------->\t deadline miss! end_clk %d deadline %d \n", end_clk, TEST1_START_CLK);
+
+		#if PUSH_DEAD
+			TEST1_START_CLK = Physical_Time;
+//		#else
+//			OSTimeDly(TEST1_PERIOD - ALL_TEST_DID +1);
+		#endif
+		}
+	}
+}
+
+
+void test2()
+{
+	INT32U end_clk = 0;		// end of time of workload
+	INT32U count_clk = 0;		// compare with temp because we check tick counter
+	INT32U count = 0;		// real execution tick counter 
+	INT32U temp=1;
+	INT32U ALL_TEST_DID;
+
+	for(;;)
+	{
+		temp = OSTimeGet();
+//		printk("2: second start : %d incoming %d virtual %d\n",TEST2_START_CLK,temp,virtual_time);
+
+		while(	count < TEST2_EXCUTION)
+		{
+			//workload
+			if(temp != count_clk)
+			{
+				count++;		//pasted tick
+				count_clk = temp;	
+//				printk("2: my second test:: virtual : %d count : %d systemtime: %d \n", virtual_time, count, Physical_Time);
+				// struct vcpu_time_info *src = &HYPERVISOR_shared_info->vcpu_info[0].time;
+			}
+			//workload
+
+			temp = OSTimeGet();
+			
+		}		
+		count = 0;
+
+		end_clk = temp+1;
+	
+		ALL_TEST_DID = end_clk - TEST2_START_CLK;		
+		
+		TEST2_START_CLK += TEST2_PERIOD;
+//jjw
+		end_clk = Physical_Time;
+		if ((INT32S)(TEST2_PERIOD - ALL_TEST_DID) >= 0) {
+			printk("2: dom2 end_clk %d virtual %d OSTimeDly( %d ) until %d \n", end_clk,virtual_time, TEST2_PERIOD - ALL_TEST_DID, TEST2_START_CLK);
+			OSTimeDly(TEST2_PERIOD - ALL_TEST_DID +1 );
+		//OSTimeDly(TEST2_START_CLK);
+		} else {
+			printk("2: -------->\t deadline miss! end_clk %d deadline %d \n", end_clk, TEST2_START_CLK);
+		#if PUSH_DEAD
+			TEST2_START_CLK = Physical_Time;
+//		#else
+//			OSTimeDly(TEST2_PERIOD - ALL_TEST_DID +1 );
+		#endif
+		}
+	}
+}
+static  void  AppTaskCreate (void)
+{
+// simple main_gsm function call
+
+	OSSchedLock();
+	virtual_time = OSTime;	
+	OSTaskCreate(test2,NULL , &FFT_STK2[TASK_STK_SIZE-1], PRIO_FFT+1);
+	OSTaskCreate(test1,NULL , &FFT_STK[TASK_STK_SIZE-1], PRIO_FFT);
+	OSSchedUnlock();
+
+//jjw
+
+}
+
+
+
+
+/*
+*********************************************************************************************************
+*                                      AppInit_TCPIP()
+*
+* Description : This function is called by AppTaskStart() and is responsible for initializing uC/TCP-IP
+*               uC/HTTPs, uC/TFTPs and uC/DHCPc if enabled.
+*********************************************************************************************************
+*/
+
+#if 0
+#if uC_TCPIP_MODULE > 0
+void AppInit_TCPIP (void)
+{
+#if EMAC_CFG_MAC_ADDR_SEL == EMAC_MAC_ADDR_SEL_CFG
+/*  
+    NetIF_MAC_Addr[0] = 0x00;
+    NetIF_MAC_Addr[1] = 0x50;
+    NetIF_MAC_Addr[2] = 0xC2;
+    NetIF_MAC_Addr[3] = 0x25;
+    NetIF_MAC_Addr[4] = 0x60;
+    NetIF_MAC_Addr[5] = 0x01;
+*/
+    NetIF_MAC_Addr[0] = 0x00;
+    NetIF_MAC_Addr[1] = 0x04;
+    NetIF_MAC_Addr[2] = 0x9F;
+    NetIF_MAC_Addr[3] = 0x00;
+    NetIF_MAC_Addr[4] = 0x59;
+    NetIF_MAC_Addr[5] = 0xD4;
+    
+#endif
+
+    err     = Net_Init();                                               /* Initialize uC/TCP-IP                                     */
+
+    ip      = NetASCII_Str_to_IP("192.168.0.2", &err);                  /* Configure the IP address                                 */
+    msk     = NetASCII_Str_to_IP("255.255.255.0", &err);                /* Configure the netmask                                    */
+    gateway = NetASCII_Str_to_IP("192.168.0.1", &err);                /* Configure the default gateway                            */
+    
+    err     = NetIP_CfgAddrThisHost(ip, msk);
+    err     = NetIP_CfgAddrDfltGateway(gateway); 
+}
+#endif
+
+#endif
+
+
+/*
+*********************************************************************************************************
+*                                         uC/Probe Callback
+*
+* Description : This task is called by the uC/Probe uC/OS-II plug-in after updating task information.
+*
+* Arguments   : none.
+*
+* Returns     : none
+*********************************************************************************************************
+*/
+
+#if (uC_PROBE_OS_PLUGIN > 0)
+static  void  AppProbeCallback (void)
+{
+}
+#endif
+
+/*
+*********************************************************************************************************
+*                                          App_TaskCreateHook()
+*
+* Description: This function is called when a task is created.
+*
+* Arguments  : ptcb   is a pointer to the task control block of the task being created.
+*
+* Note(s)    : 1) Interrupts are disabled during this call.
+*********************************************************************************************************
+*/
+
+#if (OS_APP_HOOKS_EN > 0)
+void  App_TaskCreateHook (OS_TCB *ptcb)
+{
+#if (uC_PROBE_OS_PLUGIN > 0) && (OS_PROBE_HOOKS_EN > 0)
+    OSProbe_TaskCreateHook(ptcb);
+#endif
+}
+
+/*
+*********************************************************************************************************
+*                                           App_TaskDelHook()
+*
+* Description: This function is called when a task is deleted.
+*
+* Arguments  : ptcb   is a pointer to the task control block of the task being deleted.
+*
+* Note(s)    : 1) Interrupts are disabled during this call.
+*********************************************************************************************************
+*/
+
+void  App_TaskDelHook (OS_TCB *ptcb)
+{
+    (void)ptcb;
+}
+
+/*
+*********************************************************************************************************
+*                                             App_TaskIdleHook()
+*
+* Description: This function is called by the idle task.  This hook has been added to allow you to do  
+*              such things as STOP the CPU to conserve power.
+*
+* Arguments  : none
+*
+* Note(s)    : 1) Interrupts are enabled during this call.
+*********************************************************************************************************
+*/
+
+#if OS_VERSION >= 251
+void  App_TaskIdleHook (void)
+{
+}
+#endif
+
+/*
+*********************************************************************************************************
+*                                   App_TaskStatHook()
+*
+* Description: This function is called every second by uC/OS-II's statistics task.  This allows your 
+*              application to add functionality to the statistics task.
+*
+* Returns    : none
+*********************************************************************************************************
+*/
+
+void  App_TaskStatHook (void)
+{
+}
+
+/*
+*********************************************************************************************************
+*                                           App_TaskSwHook()
+*
+* Description: This function is called when a task switch is performed.  This allows you to perform other
+*              operations during a context switch.
+*
+* Arguments  : none
+*
+* Note(s)    : 1) Interrupts are disabled during this call.
+*              2) It is assumed that the global pointer 'OSTCBHighRdy' points to the TCB of the task that
+*                 will be 'switched in' (i.e. the highest priority task) and, 'OSTCBCur' points to the 
+*                 task being switched out (i.e. the preempted task).
+*********************************************************************************************************
+*/
+
+//#if OS_TASK_SW_HOOK_EN > 0
+void  App_TaskSwHook (void)
+{
+	
+//	printk("switch in prio : %d\n",OSTCBCur->OSTCBPrio);
+	//printk("switch in prio : %d, switch out prio : %d\n",OSTCBHighRdy->OSTCBPrio,OSTCBCur->OSTCBPrio);
+	
+#if (uC_PROBE_OS_PLUGIN > 0) && (OS_PROBE_HOOKS_EN > 0)
+    OSProbe_TaskSwHook();
+#endif
+}
+//#endif
+
+/*
+*********************************************************************************************************
+*                                           App_TCBInitHook()
+*
+* Description: This function is called by OS_TCBInit() after setting up most of the TCB.
+*
+* Arguments  : ptcb    is a pointer to the TCB of the task being created.
+*
+* Note(s)    : 1) Interrupts may or may not be ENABLED during this call.
+*********************************************************************************************************
+*/
+
+#if OS_VERSION >= 204
+void  App_TCBInitHook (OS_TCB *ptcb)
+{
+    (void)ptcb;
+}
+#endif
+
+/*
+*********************************************************************************************************
+*                                               App_TimeTickHook()
+*
+* Description: This function is called every tick.
+*
+* Arguments  : none
+*
+* Note(s)    : 1) Interrupts may or may not be ENABLED during this call.
+*********************************************************************************************************
+*/
+
+#if OS_TIME_TICK_HOOK_EN > 0
+void  App_TimeTickHook (void)
+{
+
+#if (uC_PROBE_OS_PLUGIN > 0) && (OS_PROBE_HOOKS_EN > 0)
+    OSProbe_TickHook();
+#endif
+}
+#endif
+#endif
+
+/*
+*********************************************************************************************************
+*                                          EXCEPTION HANDLER
+*
+* Description : This function should be used to handle any exceptions.  It is called by
+*               OS_CPU_ARM_ExceptHndlr(), which is declared in os_cpu_a.asm
+*
+* Arguments   : ID, an identifier used to indicate what type of ARM exception has been triggered
+*               Possible ID values are shown below.
+*                  OS_CPU_ARM_EXCEPT_RESET             0x00
+*                  OS_CPU_ARM_EXCEPT_UNDEF_INSTR       0x01
+*                  OS_CPU_ARM_EXCEPT_SWI               0x02
+*                  OS_CPU_ARM_EXCEPT_PREFETCH_ABORT    0x03
+*                  OS_CPU_ARM_EXCEPT_DATA_ABORT        0x04
+*                  OS_CPU_ARM_EXCEPT_ADDR_ABORT        0x05
+*                  OS_CPU_ARM_EXCEPT_IRQ               0x06
+*                  OS_CPU_ARM_EXCEPT_FIQ               0x07
+*
+* Notes       : The ISR handler being called MUST clear the AIC by clearing any external sources and
+*               then writting the AIC ICCR and EOICR registers.
+*********************************************************************************************************
+*/
+
+#define __raw_writeb(v,a)       (*(volatile unsigned char *)(a) = (v))
+#define __raw_writew(v,a)       (*(volatile unsigned short *)(a) = (v))
+#define __raw_writel(v,a)       (*(volatile unsigned int *)(a) = (v))
+
+#define __raw_readb(a)          (*(volatile unsigned char *)(a))
+#define __raw_readw(a)          (*(volatile unsigned short *)(a))
+#define __raw_readl(a)          (*(volatile unsigned int *)(a))
+
+
+#define TZIC0_BASE_ADDR				(0xE5000000)
+
+#define IRQ_SYSTEM_TIMER_MASK		(0x04000000)
+
+#define TZIC_UNLOCK_CODE			(0xACCE550)
+
+#define oSTATUS				(0x00)		// TZIC INT STAT
+#define oLOCKEN				(0x1C)		// TZIC LOCK EN
+
+#define TZPCR0SIZE					0xE3800000
+
+extern void timer_handler(void);
+extern void tz_communication_handler(void);
+
+void OS_CPU_ExceptHndlr(CPU_DATA  except_id)
+{
+//	__raw_writel(TZIC_UNLOCK_CODE, TZIC0_BASE_ADDR+oLOCKEN);
+//	__raw_writel(0x1FF, TZPCR0SIZE);
+//	__raw_writel(0x1, TZIC0_BASE_ADDR+oLOCKEN);
+    if (__raw_readl(TZIC0_BASE_ADDR+oSTATUS) & IRQ_SYSTEM_TIMER_MASK)
+		timer_handler();
+    else if (tz_communication_get_size())
+		tz_communication_handler();
+//    else {
+/*    	CPU_INT32U    *sp;
+        sp = (CPU_INT32U *)OSTCBCur->OSTCBStkPtr;
+        APP_TRACE_INFO(("\nCPU_ARM_EXCEPTION #%d trapped.\n", except_id));
+        APP_TRACE_INFO(("R0  : 0x%08x\n", *(sp + 0x01)));
+        APP_TRACE_INFO(("R1  : 0x%08x\n", *(sp + 0x02)));
+        APP_TRACE_INFO(("R2  : 0x%08x\n", *(sp + 0x03)));
+        APP_TRACE_INFO(("R3  : 0x%08x\n", *(sp + 0x04)));
+        APP_TRACE_INFO(("R4  : 0x%08x\n", *(sp + 0x05)));
+        APP_TRACE_INFO(("R5  : 0x%08x\n", *(sp + 0x06)));
+        APP_TRACE_INFO(("R6  : 0x%08x\n", *(sp + 0x07)));
+        APP_TRACE_INFO(("R7  : 0x%08x\n", *(sp + 0x08)));
+        APP_TRACE_INFO(("R8  : 0x%08x\n", *(sp + 0x09)));
+        APP_TRACE_INFO(("R9  : 0x%08x\n", *(sp + 0x0A)));
+        APP_TRACE_INFO(("R10 : 0x%08x\n", *(sp + 0x0B)));
+        APP_TRACE_INFO(("R11 : 0x%08x\n", *(sp + 0x0C)));
+        APP_TRACE_INFO(("R12 : 0x%08x\n", *(sp + 0x0D)));
+        APP_TRACE_INFO(("SP  : 0x%08x\n",   sp));
+        APP_TRACE_INFO(("LR  : 0x%08x\n", *(sp + 0x0E)));
+        APP_TRACE_INFO(("PC  : 0x%08x\n", *(sp + 0x0F)));
+        APP_TRACE_INFO(("CPSR: 0x%08x\n", *(sp + 0x00)));*/
+
+                                                                        /* Infinite loop on other exceptions.                   */
+                                                                        /* Should be replaced by other behavior (reboot, etc.)  */
+//        while (DEF_TRUE) {
+//            ;
+//        }
+
+//    }
+}
